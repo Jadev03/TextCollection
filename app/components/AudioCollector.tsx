@@ -20,6 +20,7 @@ export default function AudioCollector({ text }: AudioCollectorProps) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
 
   useEffect(() => {
     return () => {
@@ -30,6 +31,9 @@ export default function AudioCollector({ text }: AudioCollectorProps) {
       if (timerRef.current) {
         clearInterval(timerRef.current);
       }
+      if (audioContextRef.current) {
+        audioContextRef.current.close();
+      }
     };
   }, []);
 
@@ -38,13 +42,19 @@ export default function AudioCollector({ text }: AudioCollectorProps) {
       setIsLoading(true);
       setError(null);
       
-      // Request audio with 16kHz sample rate
-      const audioConstraints: MediaTrackConstraints = {
+      // Request audio with 16kHz sample rate and enhanced noise cancellation
+      const audioConstraints: MediaTrackConstraints & Record<string, any> = {
         sampleRate: 16000,
         channelCount: 1, // Mono
         echoCancellation: true,
         noiseSuppression: true,
         autoGainControl: true,
+        // Additional Google-specific constraints for better noise cancellation (Chrome/Edge)
+        googEchoCancellation: true,
+        googNoiseSuppression: true,
+        googAutoGainControl: true,
+        googHighpassFilter: true,
+        googTypingNoiseDetection: true,
       };
 
       const stream = await navigator.mediaDevices.getUserMedia({ 
@@ -54,11 +64,44 @@ export default function AudioCollector({ text }: AudioCollectorProps) {
       
       // Create AudioContext to ensure 16kHz sample rate
       const audioContext = new AudioContext({ sampleRate: 16000 });
-      const source = audioContext.createMediaStreamSource(stream);
-      const destination = audioContext.createMediaStreamDestination();
-      source.connect(destination);
+      audioContextRef.current = audioContext;
       
-      // Use the destination stream for recording
+      const source = audioContext.createMediaStreamSource(stream);
+      
+      // Create noise reduction filter (high-pass filter to remove low-frequency noise)
+      const highPassFilter = audioContext.createBiquadFilter();
+      highPassFilter.type = 'highpass';
+      highPassFilter.frequency.value = 80; // Remove frequencies below 80Hz (background rumble)
+      highPassFilter.Q.value = 1;
+      
+      // Create low-pass filter to remove high-frequency noise
+      const lowPassFilter = audioContext.createBiquadFilter();
+      lowPassFilter.type = 'lowpass';
+      lowPassFilter.frequency.value = 8000; // Keep frequencies up to 8kHz (good for speech)
+      lowPassFilter.Q.value = 1;
+      
+      // Create dynamics compressor for noise reduction and leveling
+      const compressor = audioContext.createDynamicsCompressor();
+      compressor.threshold.value = -24; // Threshold in dB
+      compressor.knee.value = 30; // Knee in dB
+      compressor.ratio.value = 12; // Compression ratio
+      compressor.attack.value = 0.003; // Attack time in seconds
+      compressor.release.value = 0.25; // Release time in seconds
+      
+      // Create gain node for final volume control
+      const gainNode = audioContext.createGain();
+      gainNode.gain.value = 1.0;
+      
+      // Connect audio nodes: source -> highpass -> lowpass -> compressor -> gain -> destination
+      source.connect(highPassFilter);
+      highPassFilter.connect(lowPassFilter);
+      lowPassFilter.connect(compressor);
+      compressor.connect(gainNode);
+      
+      const destination = audioContext.createMediaStreamDestination();
+      gainNode.connect(destination);
+      
+      // Use the destination stream for recording (with noise cancellation applied)
       const recordingStream = destination.stream;
       
       // Configure MediaRecorder with appropriate mimeType
@@ -97,7 +140,10 @@ export default function AudioCollector({ text }: AudioCollectorProps) {
         setIsLoading(false);
         
         // Cleanup AudioContext
-        audioContext.close();
+        if (audioContextRef.current) {
+          audioContextRef.current.close();
+          audioContextRef.current = null;
+        }
         
         if (timerRef.current) {
           clearInterval(timerRef.current);
@@ -264,6 +310,14 @@ export default function AudioCollector({ text }: AudioCollectorProps) {
                     <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
                       Recording...
                     </p>
+                    <div className="flex items-center justify-center gap-2 mt-2">
+                      <div className="flex items-center gap-1 text-xs text-green-600 dark:text-green-400">
+                        <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+                          <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                        </svg>
+                        Noise Cancellation Active
+                      </div>
+                    </div>
                   </div>
                 </div>
               )}
