@@ -37,10 +37,45 @@ export default function AudioCollector({ text }: AudioCollectorProps) {
     try {
       setIsLoading(true);
       setError(null);
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      
+      // Request audio with 16kHz sample rate
+      const audioConstraints: MediaTrackConstraints = {
+        sampleRate: 16000,
+        channelCount: 1, // Mono
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+      };
+
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        audio: audioConstraints 
+      });
       streamRef.current = stream;
       
-      const mediaRecorder = new MediaRecorder(stream);
+      // Create AudioContext to ensure 16kHz sample rate
+      const audioContext = new AudioContext({ sampleRate: 16000 });
+      const source = audioContext.createMediaStreamSource(stream);
+      const destination = audioContext.createMediaStreamDestination();
+      source.connect(destination);
+      
+      // Use the destination stream for recording
+      const recordingStream = destination.stream;
+      
+      // Configure MediaRecorder with appropriate mimeType
+      let mimeType = 'audio/webm';
+      if (!MediaRecorder.isTypeSupported(mimeType)) {
+        mimeType = 'audio/webm;codecs=opus';
+        if (!MediaRecorder.isTypeSupported(mimeType)) {
+          mimeType = 'audio/ogg;codecs=opus';
+          if (!MediaRecorder.isTypeSupported(mimeType)) {
+            mimeType = ''; // Use default
+          }
+        }
+      }
+      
+      const mediaRecorder = new MediaRecorder(recordingStream, {
+        mimeType: mimeType || undefined,
+      });
       mediaRecorderRef.current = mediaRecorder;
       audioChunksRef.current = [];
 
@@ -51,13 +86,18 @@ export default function AudioCollector({ text }: AudioCollectorProps) {
       };
 
       mediaRecorder.onstop = () => {
-        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+        const audioBlob = new Blob(audioChunksRef.current, { 
+          type: mimeType || 'audio/webm' 
+        });
         const audioUrl = URL.createObjectURL(audioBlob);
         setRecordedAudio(audioUrl);
         setHasRecorded(true);
         setIsRecording(false);
         setRecordingTime(0);
         setIsLoading(false);
+        
+        // Cleanup AudioContext
+        audioContext.close();
         
         if (timerRef.current) {
           clearInterval(timerRef.current);
