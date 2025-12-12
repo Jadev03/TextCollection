@@ -43,12 +43,12 @@ export async function GET(request: NextRequest) {
     const sheets = google.sheets({ version: 'v4', auth });
 
     // Fetch only the first column (column A) for the specific row
-    // Range format: 'SheetName!A2' for row 2 (1-based index)
-    // rowIndex=1 means first data row (row 2 in sheet, assuming row 1 is header)
-    // rowIndex=2 means second data row (row 3 in sheet), etc.
-    const range = `${tabName}!A${rowIndex + 1}:A${rowIndex + 1}`;
+    // Range format: 'SheetName!A1' for row 1 (1-based index)
+    // rowIndex=1 means first row (A1)
+    // rowIndex=2 means second row (A2), etc.
+    const range = `${tabName}!A${rowIndex}:A${rowIndex}`;
 
-    console.log(`📊 Fetching Google Sheets row ${rowIndex + 1} from column A`);
+    console.log(`📊 Fetching Google Sheets row ${rowIndex} from column A`);
     console.log(`  - Sheet ID: ${sheetsId}`);
     console.log(`  - Tab: ${tabName}`);
     console.log(`  - Range: ${range}`);
@@ -74,7 +74,7 @@ export async function GET(request: NextRequest) {
     // Get the first column value (first element of first row)
     const text = values[0][0] || '';
 
-    console.log(`✅ Fetched row ${rowIndex + 1}:`, text.substring(0, 50) + (text.length > 50 ? '...' : ''));
+    console.log(`✅ Fetched row ${rowIndex}:`, text.substring(0, 50) + (text.length > 50 ? '...' : ''));
 
     return NextResponse.json({
       success: true,
