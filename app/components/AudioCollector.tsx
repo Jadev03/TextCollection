@@ -334,8 +334,13 @@ export default function AudioCollector({}: AudioCollectorProps) {
       }
       formData.append('audio', audioBlobRef.current, `recording.${fileExtension}`);
       formData.append('mimeType', mimeTypeRef.current);
+      formData.append('scriptId', currentRowIndex.toString()); // Row index from Google Sheets
+      formData.append('scriptText', currentText); // Text from Google Sheets
+      formData.append('userIdentifier', 'default_user'); // You can customize this later
       
       console.log('  - File extension:', fileExtension);
+      console.log('  - Script ID (row index):', currentRowIndex);
+      console.log('  - Script text:', currentText.substring(0, 50) + (currentText.length > 50 ? '...' : ''));
       console.log('  - Uploading with preserved format...');
 
       // Upload to Google Drive
@@ -360,6 +365,10 @@ export default function AudioCollector({}: AudioCollectorProps) {
       console.log('  - Uploaded format:', mimeTypeRef.current);
       if (data.webViewLink) {
         console.log('  - View link:', data.webViewLink);
+      }
+      if (data.supabaseRecordId) {
+        console.log('  - Supabase record ID:', data.supabaseRecordId);
+        console.log('  - ✅ Saved to Supabase recordings table');
       }
 
       // After successful upload, fetch next row
