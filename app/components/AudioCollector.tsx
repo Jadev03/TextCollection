@@ -1,13 +1,18 @@
 'use client';
 
 import { useState, useRef, useEffect } from 'react';
+import UsernameModal from './UsernameModal';
 
 interface AudioCollectorProps {}
 
 export default function AudioCollector({}: AudioCollectorProps) {
+  const [showUsernameModal, setShowUsernameModal] = useState<boolean>(true);
+  const [username, setUsername] = useState<string>('');
+  const [userId, setUserId] = useState<number | null>(null);
+  const [isLoadingUser, setIsLoadingUser] = useState<boolean>(false);
   const [currentText, setCurrentText] = useState<string>('');
   const [currentRowIndex, setCurrentRowIndex] = useState<number>(1);
-  const [isLoadingSheet, setIsLoadingSheet] = useState<boolean>(true);
+  const [isLoadingSheet, setIsLoadingSheet] = useState<boolean>(false);
   const [hasMoreRows, setHasMoreRows] = useState<boolean>(true);
   const [isRecording, setIsRecording] = useState(false);
   const [recordedAudio, setRecordedAudio] = useState<string | null>(null);
@@ -62,10 +67,44 @@ export default function AudioCollector({}: AudioCollectorProps) {
     }
   };
 
-  // Fetch first row on component mount
-  useEffect(() => {
-    fetchSheetRow(1);
-  }, []);
+  // Handle username submission
+  const handleUsernameSubmit = async (enteredUsername: string) => {
+    setIsLoadingUser(true);
+    setError(null);
+
+    try {
+      console.log(`👤 Getting user progress for: ${enteredUsername}`);
+      
+      const response = await fetch(`/api/user-progress?username=${encodeURIComponent(enteredUsername)}`);
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to get user progress');
+      }
+
+      setUsername(enteredUsername);
+      setUserId(data.userId);
+      setShowUsernameModal(false);
+
+      // Start from the next script after their last completed one
+      const startScriptId = data.nextScriptId;
+      setCurrentRowIndex(startScriptId);
+      
+      console.log(`✅ User loaded: ${enteredUsername}`);
+      console.log(`  - User ID: ${data.userId}`);
+      console.log(`  - Last completed script: ${data.lastScriptId}`);
+      console.log(`  - Starting from script: ${startScriptId}`);
+      console.log(`  - Is new user: ${data.isNewUser}`);
+
+      // Fetch the starting script
+      await fetchSheetRow(startScriptId);
+    } catch (error: any) {
+      console.error('❌ Error loading user:', error);
+      setError(error.message || 'Failed to load user progress');
+    } finally {
+      setIsLoadingUser(false);
+    }
+  };
 
   useEffect(() => {
     return () => {
@@ -336,7 +375,8 @@ export default function AudioCollector({}: AudioCollectorProps) {
       formData.append('mimeType', mimeTypeRef.current);
       formData.append('scriptId', currentRowIndex.toString()); // Row index from Google Sheets
       formData.append('scriptText', currentText); // Text from Google Sheets
-      formData.append('userIdentifier', 'default_user'); // You can customize this later
+      formData.append('userIdentifier', username || 'default_user'); // Username
+      formData.append('userId', userId?.toString() || ''); // User ID for progress tracking
       
       console.log('  - File extension:', fileExtension);
       console.log('  - Script ID (row index):', currentRowIndex);
@@ -369,6 +409,31 @@ export default function AudioCollector({}: AudioCollectorProps) {
       if (data.supabaseRecordId) {
         console.log('  - Supabase record ID:', data.supabaseRecordId);
         console.log('  - ✅ Saved to Supabase recordings table');
+      }
+
+      // Update user progress in Supabase
+      if (userId) {
+        try {
+          console.log(`💾 Updating user progress: Script ${currentRowIndex}`);
+          const progressResponse = await fetch('/api/user-progress', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              userId: userId,
+              scriptId: currentRowIndex,
+            }),
+          });
+
+          if (progressResponse.ok) {
+            console.log('✅ User progress updated successfully');
+          } else {
+            console.warn('⚠️ Failed to update user progress (non-critical)');
+          }
+        } catch (progressError) {
+          console.warn('⚠️ Error updating user progress (non-critical):', progressError);
+        }
       }
 
       // After successful upload, fetch next row
@@ -408,16 +473,28 @@ export default function AudioCollector({}: AudioCollectorProps) {
   };
 
   return (
-    <div className="w-full max-w-4xl mx-auto p-6 space-y-8">
-      {/* Header */}
-      <div className="text-center mb-8">
-        <h1 className="text-4xl font-bold text-gray-800 dark:text-gray-100 mb-2">
-          🎤 Audio Collector
-        </h1>
-        <p className="text-gray-600 dark:text-gray-400">
-          Read the text below and record your audio
-        </p>
-      </div>
+    <>
+      {/* Username Modal */}
+      <UsernameModal
+        isOpen={showUsernameModal}
+        onSubmit={handleUsernameSubmit}
+      />
+
+      <div className="w-full max-w-4xl mx-auto p-6 space-y-8">
+        {/* Header */}
+        <div className="text-center mb-8">
+          <h1 className="text-4xl font-bold text-gray-800 dark:text-gray-100 mb-2">
+            🎤 Audio Collector
+          </h1>
+          <p className="text-gray-600 dark:text-gray-400">
+            {username ? `Welcome, ${username}! Read the text below and record your audio` : 'Read the text below and record your audio'}
+          </p>
+          {username && (
+            <p className="text-sm text-gray-500 dark:text-gray-400 mt-2">
+              Script {currentRowIndex} of {currentRowIndex}+
+            </p>
+          )}
+        </div>
 
       {/* Text Display Card */}
       <div className="bg-gradient-to-br from-blue-50 to-indigo-50 dark:from-gray-800 dark:to-gray-900 rounded-2xl p-8 shadow-lg border border-blue-100 dark:border-gray-700">
@@ -678,6 +755,7 @@ export default function AudioCollector({}: AudioCollectorProps) {
         </div>
       </div>
     </div>
+    </>
   );
 }
 
