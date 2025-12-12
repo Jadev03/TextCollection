@@ -2,11 +2,13 @@
 
 import { useState, useRef, useEffect } from 'react';
 
-interface AudioCollectorProps {
-  text: string;
-}
+interface AudioCollectorProps {}
 
-export default function AudioCollector({ text }: AudioCollectorProps) {
+export default function AudioCollector({}: AudioCollectorProps) {
+  const [currentText, setCurrentText] = useState<string>('');
+  const [currentRowIndex, setCurrentRowIndex] = useState<number>(1);
+  const [isLoadingSheet, setIsLoadingSheet] = useState<boolean>(true);
+  const [hasMoreRows, setHasMoreRows] = useState<boolean>(true);
   const [isRecording, setIsRecording] = useState(false);
   const [recordedAudio, setRecordedAudio] = useState<string | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -26,6 +28,44 @@ export default function AudioCollector({ text }: AudioCollectorProps) {
   const audioContextRef = useRef<AudioContext | null>(null);
   const audioBlobRef = useRef<Blob | null>(null);
   const mimeTypeRef = useRef<string>('audio/webm');
+
+  // Fetch row from Google Sheets
+  const fetchSheetRow = async (rowIndex: number) => {
+    try {
+      setIsLoadingSheet(true);
+      setError(null);
+      
+      console.log(`📊 Fetching row ${rowIndex} from Google Sheets...`);
+      
+      const response = await fetch(`/api/fetch-sheet-row?row=${rowIndex}`);
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to fetch row from Google Sheets');
+      }
+
+      if (!data.hasMore || !data.text) {
+        setHasMoreRows(false);
+        setCurrentText('No more rows available. All done! 🎉');
+        console.log('✅ No more rows available');
+      } else {
+        setCurrentText(data.text);
+        setHasMoreRows(true);
+        console.log(`✅ Loaded row ${rowIndex}:`, data.text.substring(0, 50) + (data.text.length > 50 ? '...' : ''));
+      }
+    } catch (error: any) {
+      console.error('❌ Error fetching sheet row:', error);
+      setError(error.message || 'Failed to fetch data from Google Sheets');
+      setCurrentText('');
+    } finally {
+      setIsLoadingSheet(false);
+    }
+  };
+
+  // Fetch first row on component mount
+  useEffect(() => {
+    fetchSheetRow(1);
+  }, []);
 
   useEffect(() => {
     return () => {
@@ -321,6 +361,28 @@ export default function AudioCollector({ text }: AudioCollectorProps) {
       if (data.webViewLink) {
         console.log('  - View link:', data.webViewLink);
       }
+
+      // After successful upload, fetch next row
+      if (hasMoreRows) {
+        const nextRowIndex = currentRowIndex + 1;
+        console.log(`\n📥 Upload complete! Loading next row (${nextRowIndex})...\n`);
+        
+        // Small delay to show success message before loading next row
+        await new Promise(resolve => setTimeout(resolve, 1500));
+        
+        // Reset recording state
+        setHasRecorded(false);
+        setRecordedAudio(null);
+        setUploadSuccess(false);
+        audioBlobRef.current = null;
+        if (recordedAudio) {
+          URL.revokeObjectURL(recordedAudio);
+        }
+        
+        // Fetch next row
+        setCurrentRowIndex(nextRowIndex);
+        await fetchSheetRow(nextRowIndex);
+      }
     } catch (error: any) {
       console.error('Upload error:', error);
       setUploadError(error.message || 'Failed to upload audio to Google Drive');
@@ -357,9 +419,23 @@ export default function AudioCollector({ text }: AudioCollectorProps) {
           </h2>
         </div>
         <div className="bg-white dark:bg-gray-800 rounded-xl p-6 shadow-inner border border-gray-200 dark:border-gray-700">
-          <p className="text-lg leading-relaxed text-gray-800 dark:text-gray-200 font-medium">
-            {text}
-          </p>
+          {isLoadingSheet ? (
+            <div className="flex items-center justify-center gap-3 py-8">
+              <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-600"></div>
+              <p className="text-gray-600 dark:text-gray-400">Loading text from Google Sheets...</p>
+            </div>
+          ) : (
+            <>
+              <p className="text-lg leading-relaxed text-gray-800 dark:text-gray-200 font-medium">
+                {currentText || 'No text available'}
+              </p>
+              {hasMoreRows && (
+                <p className="text-sm text-gray-500 dark:text-gray-400 mt-4">
+                  Row {currentRowIndex} of {currentRowIndex}+
+                </p>
+              )}
+            </>
+          )}
         </div>
       </div>
 
@@ -522,7 +598,7 @@ export default function AudioCollector({ text }: AudioCollectorProps) {
                   <button
                     type="button"
                     onClick={handleOK}
-                    disabled={isUploading || uploadSuccess}
+                    disabled={isUploading || uploadSuccess || !hasMoreRows}
                     className="flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-green-500 to-green-600 hover:from-green-600 hover:to-green-700 text-white rounded-lg shadow-md hover:shadow-lg transition-all duration-300 transform hover:scale-105 active:scale-95 font-medium disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none"
                   >
                     {isUploading ? (
