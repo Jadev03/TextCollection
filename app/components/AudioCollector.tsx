@@ -14,6 +14,9 @@ export default function AudioCollector({ text }: AudioCollectorProps) {
   const [hasRecorded, setHasRecorded] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [isUploading, setIsUploading] = useState(false);
+  const [uploadSuccess, setUploadSuccess] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
@@ -21,6 +24,8 @@ export default function AudioCollector({ text }: AudioCollectorProps) {
   const streamRef = useRef<MediaStream | null>(null);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
+  const audioBlobRef = useRef<Blob | null>(null);
+  const mimeTypeRef = useRef<string>('audio/webm');
 
   useEffect(() => {
     return () => {
@@ -105,13 +110,14 @@ export default function AudioCollector({ text }: AudioCollectorProps) {
       const recordingStream = destination.stream;
       
       // Configure MediaRecorder with appropriate mimeType
+      // Try to preserve the format - prefer webm, then ogg, then browser default
       let mimeType = 'audio/webm';
       if (!MediaRecorder.isTypeSupported(mimeType)) {
         mimeType = 'audio/webm;codecs=opus';
         if (!MediaRecorder.isTypeSupported(mimeType)) {
           mimeType = 'audio/ogg;codecs=opus';
           if (!MediaRecorder.isTypeSupported(mimeType)) {
-            mimeType = ''; // Use default
+            mimeType = ''; // Use browser default
           }
         }
       }
@@ -121,6 +127,16 @@ export default function AudioCollector({ text }: AudioCollectorProps) {
       });
       mediaRecorderRef.current = mediaRecorder;
       audioChunksRef.current = [];
+      
+      // Store the ACTUAL mimeType that MediaRecorder is using (preserve exact format)
+      // This ensures we use the exact same format for upload
+      mimeTypeRef.current = mediaRecorder.mimeType || mimeType || 'audio/webm';
+      
+      // Log the audio format being used for recording
+      console.log('🎤 Recording started with format:');
+      console.log('  - Requested mimeType:', mimeType || 'browser default');
+      console.log('  - Actual MediaRecorder mimeType:', mediaRecorder.mimeType);
+      console.log('  - Stored mimeType:', mimeTypeRef.current);
 
       mediaRecorder.ondataavailable = (event) => {
         if (event.data.size > 0) {
@@ -129,15 +145,29 @@ export default function AudioCollector({ text }: AudioCollectorProps) {
       };
 
       mediaRecorder.onstop = () => {
+        // Get the final mimeType from MediaRecorder to ensure exact format match
+        const finalMimeType = mediaRecorder.mimeType || mimeTypeRef.current;
+        mimeTypeRef.current = finalMimeType;
+        
+        // Create blob with the exact mimeType to preserve format
         const audioBlob = new Blob(audioChunksRef.current, { 
-          type: mimeType || 'audio/webm' 
+          type: finalMimeType
         });
+        // Store blob in ref for upload (preserves original format)
+        audioBlobRef.current = audioBlob;
         const audioUrl = URL.createObjectURL(audioBlob);
         setRecordedAudio(audioUrl);
         setHasRecorded(true);
         setIsRecording(false);
         setRecordingTime(0);
         setIsLoading(false);
+        
+        // Log the recorded audio format
+        console.log('✅ Recording stopped - Audio format:');
+        console.log('  - Final mimeType:', finalMimeType);
+        console.log('  - Blob type:', audioBlob.type);
+        console.log('  - Blob size:', (audioBlob.size / 1024).toFixed(2), 'KB');
+        console.log('  - Audio URL created for playback');
         
         // Cleanup AudioContext
         if (audioContextRef.current) {
@@ -180,6 +210,14 @@ export default function AudioCollector({ text }: AudioCollectorProps) {
 
   const playRecording = () => {
     if (recordedAudio && audioRef.current) {
+      // Log the audio format being played
+      console.log('▶️ Playing audio:');
+      console.log('  - Audio source URL:', recordedAudio);
+      console.log('  - Audio format (mimeType):', mimeTypeRef.current);
+      if (audioBlobRef.current) {
+        console.log('  - Blob type:', audioBlobRef.current.type);
+        console.log('  - Blob size:', (audioBlobRef.current.size / 1024).toFixed(2), 'KB');
+      }
       audioRef.current.play();
       setIsPlaying(true);
     }
@@ -196,6 +234,19 @@ export default function AudioCollector({ text }: AudioCollectorProps) {
     setIsPlaying(false);
   };
 
+  const handleAudioLoadedMetadata = () => {
+    if (audioRef.current) {
+      console.log('🎵 Audio player loaded metadata:');
+      console.log('  - Audio source:', audioRef.current.src);
+      console.log('  - Audio format (from blob):', mimeTypeRef.current);
+      if (audioBlobRef.current) {
+        console.log('  - Blob type:', audioBlobRef.current.type);
+      }
+      console.log('  - Audio duration:', audioRef.current.duration.toFixed(2), 'seconds');
+      console.log('  - Audio ready for playback');
+    }
+  };
+
   const handleReRecord = () => {
     if (audioRef.current) {
       audioRef.current.pause();
@@ -204,16 +255,78 @@ export default function AudioCollector({ text }: AudioCollectorProps) {
     setIsPlaying(false);
     setRecordedAudio(null);
     setHasRecorded(false);
+    setUploadSuccess(false);
+    setUploadError(null);
+    audioBlobRef.current = null;
     if (recordedAudio) {
       URL.revokeObjectURL(recordedAudio);
     }
   };
 
-  const handleOK = () => {
-    if (recordedAudio) {
-      // Here you can handle the final submission
-      alert('Audio recorded successfully! Ready for upload.');
-      // You can add logic to upload the audio here
+  const handleOK = async () => {
+    if (!audioBlobRef.current) {
+      setError('No audio recorded. Please record again.');
+      return;
+    }
+
+    setIsUploading(true);
+    setUploadError(null);
+    setUploadSuccess(false);
+    setError(null);
+
+    try {
+      // Log the audio format being uploaded
+      console.log('📤 Uploading audio to Google Drive:');
+      console.log('  - Audio format (mimeType):', mimeTypeRef.current);
+      if (audioBlobRef.current) {
+        console.log('  - Blob type:', audioBlobRef.current.type);
+        console.log('  - Blob size:', (audioBlobRef.current.size / 1024).toFixed(2), 'KB');
+      }
+      
+      // Create FormData to send the audio file
+      const formData = new FormData();
+      // Determine file extension based on mimeType
+      let fileExtension = 'webm';
+      if (mimeTypeRef.current.includes('webm')) {
+        fileExtension = 'webm';
+      } else if (mimeTypeRef.current.includes('ogg')) {
+        fileExtension = 'ogg';
+      }
+      formData.append('audio', audioBlobRef.current, `recording.${fileExtension}`);
+      formData.append('mimeType', mimeTypeRef.current);
+      
+      console.log('  - File extension:', fileExtension);
+      console.log('  - Uploading with preserved format...');
+
+      // Upload to Google Drive
+      const response = await fetch('/api/upload-audio', {
+        method: 'POST',
+        body: formData,
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to upload audio');
+      }
+
+      setUploadSuccess(true);
+      setUploadError(null);
+      
+      // Log successful upload with format info
+      console.log('✅ Audio uploaded successfully to Google Drive:');
+      console.log('  - File ID:', data.fileId);
+      console.log('  - File name:', data.fileName);
+      console.log('  - Uploaded format:', mimeTypeRef.current);
+      if (data.webViewLink) {
+        console.log('  - View link:', data.webViewLink);
+      }
+    } catch (error: any) {
+      console.error('Upload error:', error);
+      setUploadError(error.message || 'Failed to upload audio to Google Drive');
+      setUploadSuccess(false);
+    } finally {
+      setIsUploading(false);
     }
   };
 
@@ -346,17 +459,50 @@ export default function AudioCollector({ text }: AudioCollectorProps) {
                     ref={audioRef}
                     src={recordedAudio || undefined}
                     onEnded={handleAudioEnded}
+                    onLoadedMetadata={handleAudioLoadedMetadata}
                     className="w-full"
                     controls
                   />
                 </div>
+
+                {/* Upload Status */}
+                {isUploading && (
+                  <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-xl p-4 flex items-center gap-3">
+                    <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-blue-600"></div>
+                    <p className="text-blue-800 dark:text-blue-200">Uploading to Google Drive...</p>
+                  </div>
+                )}
+
+                {uploadSuccess && (
+                  <div className="bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-xl p-4 flex items-center gap-3">
+                    <svg className="w-5 h-5 text-green-600 dark:text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                    </svg>
+                    <p className="text-green-800 dark:text-green-200">Audio uploaded to Google Drive successfully!</p>
+                  </div>
+                )}
+
+                {uploadError && (
+                  <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-xl p-4 flex items-center gap-3">
+                    <div className="text-xl">⚠️</div>
+                    <p className="text-red-800 dark:text-red-200">{uploadError}</p>
+                    <button
+                      type="button"
+                      onClick={() => setUploadError(null)}
+                      className="ml-auto text-red-600 dark:text-red-400 hover:text-red-800 dark:hover:text-red-200"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                )}
 
                 {/* Action Buttons */}
                 <div className="flex flex-wrap gap-4 justify-center">
                   <button
                     type="button"
                     onClick={handleReRecord}
-                    className="flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-orange-500 to-orange-600 hover:from-orange-600 hover:to-orange-700 text-white rounded-lg shadow-md hover:shadow-lg transition-all duration-300 transform hover:scale-105 active:scale-95 font-medium"
+                    disabled={isUploading}
+                    className="flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-orange-500 to-orange-600 hover:from-orange-600 hover:to-orange-700 text-white rounded-lg shadow-md hover:shadow-lg transition-all duration-300 transform hover:scale-105 active:scale-95 font-medium disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none"
                   >
                     <svg
                       className="w-5 h-5"
@@ -376,22 +522,49 @@ export default function AudioCollector({ text }: AudioCollectorProps) {
                   <button
                     type="button"
                     onClick={handleOK}
-                    className="flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-green-500 to-green-600 hover:from-green-600 hover:to-green-700 text-white rounded-lg shadow-md hover:shadow-lg transition-all duration-300 transform hover:scale-105 active:scale-95 font-medium"
+                    disabled={isUploading || uploadSuccess}
+                    className="flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-green-500 to-green-600 hover:from-green-600 hover:to-green-700 text-white rounded-lg shadow-md hover:shadow-lg transition-all duration-300 transform hover:scale-105 active:scale-95 font-medium disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none"
                   >
-                    <svg
-                      className="w-5 h-5"
-                      fill="none"
-                      stroke="currentColor"
-                      viewBox="0 0 24 24"
-                    >
-                      <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        strokeWidth={2}
-                        d="M5 13l4 4L19 7"
-                      />
-                    </svg>
-                    OK - Looks Good!
+                    {isUploading ? (
+                      <>
+                        <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div>
+                        Uploading...
+                      </>
+                    ) : uploadSuccess ? (
+                      <>
+                        <svg
+                          className="w-5 h-5"
+                          fill="none"
+                          stroke="currentColor"
+                          viewBox="0 0 24 24"
+                        >
+                          <path
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            strokeWidth={2}
+                            d="M5 13l4 4L19 7"
+                          />
+                        </svg>
+                        Uploaded!
+                      </>
+                    ) : (
+                      <>
+                        <svg
+                          className="w-5 h-5"
+                          fill="none"
+                          stroke="currentColor"
+                          viewBox="0 0 24 24"
+                        >
+                          <path
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            strokeWidth={2}
+                            d="M5 13l4 4L19 7"
+                          />
+                        </svg>
+                        OK - Looks Good!
+                      </>
+                    )}
                   </button>
                 </div>
               </div>
