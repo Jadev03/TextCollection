@@ -9,7 +9,11 @@ export default function AudioCollector({}: AudioCollectorProps) {
   const [showUsernameModal, setShowUsernameModal] = useState<boolean>(true);
   const [username, setUsername] = useState<string>('');
   const [userId, setUserId] = useState<number | null>(null);
+  const [sessionId, setSessionId] = useState<string>('');
+  const [userVersion, setUserVersion] = useState<number>(0);
+  const [isSessionValid, setIsSessionValid] = useState<boolean>(true);
   const [isLoadingUser, setIsLoadingUser] = useState<boolean>(false);
+  const sessionCheckIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const [currentText, setCurrentText] = useState<string>('');
   const [currentRowIndex, setCurrentRowIndex] = useState<number>(1);
   const [isLoadingSheet, setIsLoadingSheet] = useState<boolean>(false);
@@ -67,15 +71,31 @@ export default function AudioCollector({}: AudioCollectorProps) {
     }
   };
 
+  // Generate unique session ID on component mount
+  useEffect(() => {
+    const generateSessionId = () => {
+      if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+        return crypto.randomUUID();
+      }
+      // Fallback for browsers without crypto.randomUUID
+      return 'session_' + Date.now() + '_' + Math.random().toString(36).substring(2, 15);
+    };
+    
+    const newSessionId = generateSessionId();
+    setSessionId(newSessionId);
+    console.log(`🆔 New session created: ${newSessionId}`);
+  }, []);
+
   // Handle username submission
   const handleUsernameSubmit = async (enteredUsername: string) => {
     setIsLoadingUser(true);
     setError(null);
 
     try {
-      console.log(`👤 Getting user progress for: ${enteredUsername}`);
+      const currentSessionId = sessionId || crypto.randomUUID();
+      console.log(`👤 Getting user progress for: ${enteredUsername} (Session: ${currentSessionId})`);
       
-      const response = await fetch(`/api/user-progress?username=${encodeURIComponent(enteredUsername)}`);
+      const response = await fetch(`/api/user-progress?username=${encodeURIComponent(enteredUsername)}&sessionId=${currentSessionId}`);
       const data = await response.json();
 
       if (!response.ok) {
@@ -84,7 +104,13 @@ export default function AudioCollector({}: AudioCollectorProps) {
 
       setUsername(enteredUsername);
       setUserId(data.userId);
+      setSessionId(data.sessionId || currentSessionId);
+      setUserVersion(data.version || 0);
+      setIsSessionValid(true);
       setShowUsernameModal(false);
+
+      // Start periodic session validation
+      startSessionValidation(data.userId, data.sessionId || currentSessionId);
 
       // Start from the next script after their last completed one
       const startScriptId = data.nextScriptId;
@@ -92,9 +118,11 @@ export default function AudioCollector({}: AudioCollectorProps) {
       
       console.log(`✅ User loaded: ${enteredUsername}`);
       console.log(`  - User ID: ${data.userId}`);
+      console.log(`  - Session ID: ${data.sessionId}`);
       console.log(`  - Last completed script: ${data.lastScriptId}`);
       console.log(`  - Starting from script: ${startScriptId}`);
       console.log(`  - Is new user: ${data.isNewUser}`);
+      console.log(`  - Concurrent session: ${data.hasConcurrentSession}`);
 
       // Fetch the starting script
       await fetchSheetRow(startScriptId);
@@ -104,6 +132,44 @@ export default function AudioCollector({}: AudioCollectorProps) {
     } finally {
       setIsLoadingUser(false);
     }
+  };
+
+  // Session validation function
+  const checkSessionValidity = async (userId: number, currentSessionId: string) => {
+    try {
+      const response = await fetch(`/api/check-session?userId=${userId}&sessionId=${currentSessionId}`);
+      const data = await response.json();
+
+      if (data.success && !data.isActive) {
+        // Session was invalidated by another device/tab
+        setIsSessionValid(false);
+        setError('This session has been replaced by another device/tab. Please refresh the page to continue.');
+        console.warn('⚠️ Session invalidated by another device/tab');
+        
+        // Stop session checking
+        if (sessionCheckIntervalRef.current) {
+          clearInterval(sessionCheckIntervalRef.current);
+          sessionCheckIntervalRef.current = null;
+        }
+      }
+    } catch (error) {
+      console.error('Error checking session:', error);
+    }
+  };
+
+  // Start periodic session validation
+  const startSessionValidation = (userId: number, currentSessionId: string) => {
+    // Clear any existing interval
+    if (sessionCheckIntervalRef.current) {
+      clearInterval(sessionCheckIntervalRef.current);
+    }
+
+    // Check session every 5 seconds
+    sessionCheckIntervalRef.current = setInterval(() => {
+      if (userId && currentSessionId) {
+        checkSessionValidity(userId, currentSessionId);
+      }
+    }, 5000);
   };
 
   useEffect(() => {
@@ -117,6 +183,9 @@ export default function AudioCollector({}: AudioCollectorProps) {
       }
       if (audioContextRef.current) {
         audioContextRef.current.close();
+      }
+      if (sessionCheckIntervalRef.current) {
+        clearInterval(sessionCheckIntervalRef.current);
       }
     };
   }, []);
@@ -343,6 +412,11 @@ export default function AudioCollector({}: AudioCollectorProps) {
   };
 
   const handleOK = async () => {
+    if (!isSessionValid) {
+      setError('Session has been replaced. Please refresh the page.');
+      return;
+    }
+
     if (!audioBlobRef.current) {
       setError('No audio recorded. Please record again.');
       return;
@@ -414,7 +488,7 @@ export default function AudioCollector({}: AudioCollectorProps) {
       // Update user progress in Supabase
       if (userId) {
         try {
-          console.log(`💾 Updating user progress: Script ${currentRowIndex}`);
+          console.log(`💾 Updating user progress: Script ${currentRowIndex}, Session: ${sessionId}`);
           const progressResponse = await fetch('/api/user-progress', {
             method: 'POST',
             headers: {
@@ -423,13 +497,39 @@ export default function AudioCollector({}: AudioCollectorProps) {
             body: JSON.stringify({
               userId: userId,
               scriptId: currentRowIndex,
+              sessionId: sessionId,
+              expectedVersion: userVersion,
             }),
           });
 
+          const progressData = await progressResponse.json();
+
           if (progressResponse.ok) {
-            console.log('✅ User progress updated successfully');
+            if (progressData.error === 'SESSION_INVALIDATED') {
+              // Session was invalidated during upload
+              setIsSessionValid(false);
+              setError('This session has been replaced by another device/tab. Please refresh the page.');
+              console.warn('⚠️ Session invalidated during upload');
+              
+              // Stop session checking
+              if (sessionCheckIntervalRef.current) {
+                clearInterval(sessionCheckIntervalRef.current);
+                sessionCheckIntervalRef.current = null;
+              }
+            } else if (progressData.conflict) {
+              console.warn('⚠️ Progress conflict detected - another session may have updated');
+              setError('Progress was updated by another session. Please refresh the page.');
+            } else {
+              console.log('✅ User progress updated successfully');
+              setUserVersion(progressData.version || userVersion + 1);
+            }
           } else {
-            console.warn('⚠️ Failed to update user progress (non-critical)');
+            if (progressData.error === 'SESSION_INVALIDATED') {
+              setIsSessionValid(false);
+              setError('This session has been replaced by another device/tab. Please refresh the page.');
+            } else {
+              console.warn('⚠️ Failed to update user progress (non-critical)');
+            }
           }
         } catch (progressError) {
           console.warn('⚠️ Error updating user progress (non-critical):', progressError);
@@ -481,6 +581,29 @@ export default function AudioCollector({}: AudioCollectorProps) {
       />
 
       <div className="w-full max-w-4xl mx-auto p-6 space-y-8">
+        {/* Session Invalidated Warning */}
+        {!isSessionValid && (
+          <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-xl p-4 mb-6">
+            <div className="flex items-start gap-3">
+              <div className="text-xl">🔒</div>
+              <div className="flex-1">
+                <h3 className="font-semibold text-red-800 dark:text-red-200 mb-1">
+                  Session Replaced
+                </h3>
+                <p className="text-sm text-red-700 dark:text-red-300 mb-3">
+                  This session has been replaced by another device/tab. Please refresh the page to continue with the latest session.
+                </p>
+                <button
+                  onClick={() => window.location.reload()}
+                  className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg text-sm font-medium transition-colors"
+                >
+                  Refresh Page
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Header */}
         <div className="text-center mb-8">
           <h1 className="text-4xl font-bold text-gray-800 dark:text-gray-100 mb-2">
@@ -550,8 +673,9 @@ export default function AudioCollector({}: AudioCollectorProps) {
                 <button
                   type="button"
                   onClick={startRecording}
+                  disabled={!isSessionValid || isLoading}
                   aria-label="Start recording"
-                  className="group relative flex items-center justify-center w-24 h-24 bg-gradient-to-br from-red-500 to-red-600 hover:from-red-600 hover:to-red-700 rounded-full shadow-lg hover:shadow-xl transition-all duration-300 transform hover:scale-105 active:scale-95"
+                  className="group relative flex items-center justify-center w-24 h-24 bg-gradient-to-br from-red-500 to-red-600 hover:from-red-600 hover:to-red-700 rounded-full shadow-lg hover:shadow-xl transition-all duration-300 transform hover:scale-105 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none"
                 >
                   <div className="absolute inset-0 rounded-full bg-red-400 animate-ping opacity-75"></div>
                   <svg
@@ -684,7 +808,7 @@ export default function AudioCollector({}: AudioCollectorProps) {
                   <button
                     type="button"
                     onClick={handleOK}
-                    disabled={isUploading || uploadSuccess || !hasMoreRows}
+                    disabled={!isSessionValid || isUploading || uploadSuccess || !hasMoreRows}
                     className="flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-green-500 to-green-600 hover:from-green-600 hover:to-green-700 text-white rounded-lg shadow-md hover:shadow-lg transition-all duration-300 transform hover:scale-105 active:scale-95 font-medium disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none"
                   >
                     {isUploading ? (
