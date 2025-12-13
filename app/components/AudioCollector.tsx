@@ -14,10 +14,13 @@ export default function AudioCollector({}: AudioCollectorProps) {
   const [isSessionValid, setIsSessionValid] = useState<boolean>(true);
   const [isLoadingUser, setIsLoadingUser] = useState<boolean>(false);
   const sessionCheckIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const [scriptsBatch, setScriptsBatch] = useState<Array<{ rowIndex: number; text: string }>>([]);
+  const [currentScriptIndex, setCurrentScriptIndex] = useState<number>(0);
   const [currentText, setCurrentText] = useState<string>('');
   const [currentRowIndex, setCurrentRowIndex] = useState<number>(1);
   const [isLoadingSheet, setIsLoadingSheet] = useState<boolean>(false);
   const [hasMoreRows, setHasMoreRows] = useState<boolean>(true);
+  const [nextStartRow, setNextStartRow] = useState<number | null>(null);
   const [isRecording, setIsRecording] = useState(false);
   const [recordedAudio, setRecordedAudio] = useState<string | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -38,36 +41,87 @@ export default function AudioCollector({}: AudioCollectorProps) {
   const audioBlobRef = useRef<Blob | null>(null);
   const mimeTypeRef = useRef<string>('audio/webm');
 
-  // Fetch row from Google Sheets
-  const fetchSheetRow = async (rowIndex: number) => {
+  // Fetch batch of scripts from Google Sheets (pagination)
+  const fetchScriptsBatch = async (startRow: number, limit: number = 10) => {
     try {
       setIsLoadingSheet(true);
       setError(null);
       
-      console.log(`📊 Fetching row ${rowIndex} from Google Sheets...`);
+      console.log(`📊 Fetching scripts batch starting from row ${startRow} (limit: ${limit})...`);
       
-      const response = await fetch(`/api/fetch-sheet-row?row=${rowIndex}`);
+      const response = await fetch(`/api/fetch-sheet-row?startRow=${startRow}&limit=${limit}`);
       const data = await response.json();
 
       if (!response.ok) {
-        throw new Error(data.error || 'Failed to fetch row from Google Sheets');
+        throw new Error(data.error || 'Failed to fetch scripts from Google Sheets');
       }
 
-      if (!data.hasMore || !data.text) {
+      if (!data.scripts || data.scripts.length === 0) {
+        // No scripts returned at all
         setHasMoreRows(false);
-        setCurrentText('No more rows available. All done! 🎉');
-        console.log('✅ No more rows available');
+        setScriptsBatch([]);
+        setNextStartRow(null);
+        setCurrentText('No more scripts available. All done! 🎉');
+        console.log('✅ No more scripts available (empty response)');
       } else {
-        setCurrentText(data.text);
-        setHasMoreRows(true);
-        console.log(`✅ Loaded row ${rowIndex}:`, data.text.substring(0, 50) + (data.text.length > 50 ? '...' : ''));
+        setScriptsBatch(data.scripts);
+        setNextStartRow(data.nextStartRow);
+        // hasMoreRows should be true if there's a nextStartRow (meaning more data exists)
+        // OR if we have scripts in the current batch that we haven't shown yet
+        setHasMoreRows(data.nextStartRow !== null || data.scripts.length > 1);
+        setCurrentScriptIndex(0); // Start from first script in batch
+        
+        // Set current script
+        if (data.scripts.length > 0) {
+          setCurrentText(data.scripts[0].text);
+          setCurrentRowIndex(data.scripts[0].rowIndex);
+        }
+        
+        console.log(`✅ Loaded ${data.scripts.length} scripts (rows ${data.startRow}-${data.endRow})`);
+        console.log(`  - Has more (API): ${data.hasMore}`);
+        console.log(`  - Next batch starts at row: ${data.nextStartRow || 'N/A'}`);
+        console.log(`  - Setting hasMoreRows to: ${data.nextStartRow !== null || data.scripts.length > 1}`);
+        console.log(`  - Scripts in batch: ${data.scripts.map((s: { rowIndex: number; text: string }) => s.rowIndex).join(', ')}`);
       }
     } catch (error: any) {
-      console.error('❌ Error fetching sheet row:', error);
+      console.error('❌ Error fetching scripts batch:', error);
       setError(error.message || 'Failed to fetch data from Google Sheets');
       setCurrentText('');
+      setScriptsBatch([]);
     } finally {
       setIsLoadingSheet(false);
+    }
+  };
+
+  // Move to next script in current batch or fetch next batch
+  const moveToNextScript = async () => {
+    const nextIndex = currentScriptIndex + 1;
+    
+    console.log(`📄 Attempting to move to next script:`);
+    console.log(`  - Current index: ${currentScriptIndex}`);
+    console.log(`  - Next index: ${nextIndex}`);
+    console.log(`  - Batch size: ${scriptsBatch.length}`);
+    console.log(`  - Has more rows: ${hasMoreRows}`);
+    console.log(`  - Next start row: ${nextStartRow}`);
+    
+    // Check if we have more scripts in current batch
+    if (nextIndex < scriptsBatch.length) {
+      // Use next script from current batch
+      setCurrentScriptIndex(nextIndex);
+      setCurrentText(scriptsBatch[nextIndex].text);
+      setCurrentRowIndex(scriptsBatch[nextIndex].rowIndex);
+      console.log(`✅ Moving to next script in batch: ${nextIndex + 1}/${scriptsBatch.length}`);
+    } else if (hasMoreRows && nextStartRow) {
+      // Current batch exhausted, fetch next batch
+      console.log(`📦 Current batch exhausted, fetching next batch from row ${nextStartRow}`);
+      await fetchScriptsBatch(nextStartRow);
+    } else {
+      // No more scripts
+      console.log(`❌ No more scripts available`);
+      console.log(`  - hasMoreRows: ${hasMoreRows}`);
+      console.log(`  - nextStartRow: ${nextStartRow}`);
+      setHasMoreRows(false);
+      setCurrentText('No more scripts available. All done! 🎉');
     }
   };
 
@@ -122,10 +176,9 @@ export default function AudioCollector({}: AudioCollectorProps) {
       console.log(`  - Last completed script: ${data.lastScriptId}`);
       console.log(`  - Starting from script: ${startScriptId}`);
       console.log(`  - Is new user: ${data.isNewUser}`);
-      console.log(`  - Concurrent session: ${data.hasConcurrentSession}`);
 
-      // Fetch the starting script
-      await fetchSheetRow(startScriptId);
+      // Fetch first batch of scripts starting from user's next script
+      await fetchScriptsBatch(startScriptId, 10);
     } catch (error: any) {
       console.error('❌ Error loading user:', error);
       setError(error.message || 'Failed to load user progress');
@@ -553,9 +606,8 @@ export default function AudioCollector({}: AudioCollectorProps) {
           URL.revokeObjectURL(recordedAudio);
         }
         
-        // Fetch next row
-        setCurrentRowIndex(nextRowIndex);
-        await fetchSheetRow(nextRowIndex);
+        // Move to next script (from batch or fetch next batch)
+        await moveToNextScript();
       }
     } catch (error: any) {
       console.error('Upload error:', error);
