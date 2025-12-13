@@ -27,7 +27,8 @@ function getGoogleClient() {
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
-    const rowIndex = parseInt(searchParams.get('row') || '1', 10); // Default to row 1 (index 1-based)
+    const startRow = parseInt(searchParams.get('startRow') || '1', 10); // Starting row (1-based)
+    const limit = parseInt(searchParams.get('limit') || '10', 10); // Number of rows to fetch (default 10)
 
     const sheetsId = process.env.GOOGLE_SHEETS_ID;
     const tabName = process.env.GOOGLE_SHEETS_TAB;
@@ -42,16 +43,16 @@ export async function GET(request: NextRequest) {
     const auth = getGoogleClient();
     const sheets = google.sheets({ version: 'v4', auth });
 
-    // Fetch only the first column (column A) for the specific row
-    // Range format: 'SheetName!A1' for row 1 (1-based index)
-    // rowIndex=1 means first row (A1)
-    // rowIndex=2 means second row (A2), etc.
-    const range = `${tabName}!A${rowIndex}:A${rowIndex}`;
+    // Fetch multiple rows from the first column (column A)
+    // Range format: 'SheetName!A1:A10' for rows 1-10
+    const endRow = startRow + limit - 1;
+    const range = `${tabName}!A${startRow}:A${endRow}`;
 
-    console.log(`📊 Fetching Google Sheets row ${rowIndex} from column A`);
+    console.log(`📊 Fetching Google Sheets rows ${startRow}-${endRow} from column A (pagination)`);
     console.log(`  - Sheet ID: ${sheetsId}`);
     console.log(`  - Tab: ${tabName}`);
     console.log(`  - Range: ${range}`);
+    console.log(`  - Limit: ${limit} rows`);
 
     const response = await sheets.spreadsheets.values.get({
       spreadsheetId: sheetsId,
@@ -60,30 +61,54 @@ export async function GET(request: NextRequest) {
 
     const values = response.data.values;
 
-    if (!values || values.length === 0 || !values[0] || values[0].length === 0) {
+    if (!values || values.length === 0) {
       // No more rows available
       return NextResponse.json({
         success: true,
         hasMore: false,
-        text: null,
-        rowIndex: rowIndex,
+        scripts: [],
+        startRow: startRow,
+        endRow: startRow - 1,
         message: 'No more rows available',
       });
     }
 
-    // Get the first column value (first element of first row)
-    const text = values[0][0] || '';
+    // Extract scripts from the first column, filter out empty rows
+    const scripts = values
+      .map((row, index) => ({
+        rowIndex: startRow + index,
+        text: row[0] || '',
+      }))
+      .filter(script => script.text.trim() !== ''); // Remove empty rows
 
-    console.log(`✅ Fetched row ${rowIndex}:`, text.substring(0, 50) + (text.length > 50 ? '...' : ''));
+    // Check if there are more scripts
+    // If we got exactly the limit number of rows, there might be more
+    // If we got fewer, we've reached the end
+    const actualRowsReturned = values.length;
+    const hasMore = actualRowsReturned === limit; // If we got exactly the limit, there might be more
+
+    // Calculate next start row - use the actual row count, not filtered script count
+    // This ensures we don't skip rows even if some are empty
+    const nextStartRow = hasMore ? startRow + actualRowsReturned : null;
+
+    console.log(`✅ Fetched ${scripts.length} scripts (rows ${startRow}-${startRow + actualRowsReturned - 1})`);
+    console.log(`  - Actual rows returned: ${actualRowsReturned}`);
+    console.log(`  - Has more: ${hasMore}`);
+    if (scripts.length > 0) {
+      console.log(`  - First script: ${scripts[0].text.substring(0, 50)}${scripts[0].text.length > 50 ? '...' : ''}`);
+      console.log(`  - Last script: ${scripts[scripts.length - 1].text.substring(0, 50)}${scripts[scripts.length - 1].text.length > 50 ? '...' : ''}`);
+    }
 
     return NextResponse.json({
       success: true,
-      hasMore: true,
-      text: text,
-      rowIndex: rowIndex,
+      hasMore: hasMore,
+      scripts: scripts,
+      startRow: startRow,
+      endRow: startRow + actualRowsReturned - 1,
+      nextStartRow: nextStartRow,
     });
   } catch (error: any) {
-    console.error('❌ Error fetching Google Sheets row:', error);
+    console.error('❌ Error fetching Google Sheets rows:', error);
     return NextResponse.json(
       {
         success: false,

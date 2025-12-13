@@ -5,19 +5,22 @@ import { supabaseServer } from '@/lib/supabase-server';
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
-    const username = searchParams.get('username');
+    const usernameParam = searchParams.get('username');
     const sessionId = searchParams.get('sessionId') || `session_${Date.now()}_${Math.random().toString(36).substring(2, 15)}`;
 
-    if (!username) {
+    if (!usernameParam) {
       return NextResponse.json(
         { error: 'Username is required' },
         { status: 400 }
       );
     }
 
+    // Normalize username to lowercase for case-insensitive handling
+    const username = usernameParam.trim().toLowerCase();
+
     console.log(`👤 Getting user progress for: ${username} (Session: ${sessionId})`);
 
-    // Check if user exists
+    // Check if user exists (case-insensitive search)
     const { data: existingUser, error: fetchError } = await supabaseServer
       .from('users')
       .select('id, username, last_script_id, session_id, last_activity, version')
@@ -74,7 +77,7 @@ export async function GET(request: NextRequest) {
       const { data: newUser, error: createError } = await supabaseServer
         .from('users')
         .insert({
-          username: username,
+          username: username, // Store in lowercase
           last_script_id: 0, // Start from script 1 (0 means haven't completed any)
           session_id: sessionId,
           last_activity: new Date().toISOString(),
