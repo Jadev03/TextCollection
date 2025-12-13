@@ -814,15 +814,6 @@ export default function AudioCollector({}: AudioCollectorProps) {
                   </div>
                 )}
 
-                {uploadSuccess && (
-                  <div className="bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-xl p-4 flex items-center gap-3">
-                    <svg className="w-5 h-5 text-green-600 dark:text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                    </svg>
-                    <p className="text-green-800 dark:text-green-200">Audio uploaded to Google Drive successfully!</p>
-                  </div>
-                )}
-
                 {uploadError && (
                   <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-xl p-4 flex items-center gap-3">
                     <div className="text-xl">⚠️</div>
