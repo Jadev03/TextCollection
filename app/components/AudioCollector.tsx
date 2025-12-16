@@ -22,6 +22,8 @@ export default function AudioCollector({}: AudioCollectorProps) {
   const [isLoadingSheet, setIsLoadingSheet] = useState<boolean>(false);
   const [hasMoreRows, setHasMoreRows] = useState<boolean>(true);
   const [levelComplete, setLevelComplete] = useState<boolean>(false);
+  const [scriptsBatch, setScriptsBatch] = useState<Array<{ originalRowIndex: number; text: string; indexInBatch: number; scriptIndexInLevel: number }>>([]);
+  const [currentBatchIndex, setCurrentBatchIndex] = useState<number>(0);
   const [isRecording, setIsRecording] = useState(false);
   const [recordedAudio, setRecordedAudio] = useState<string | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -42,8 +44,8 @@ export default function AudioCollector({}: AudioCollectorProps) {
   const audioBlobRef = useRef<Blob | null>(null);
   const mimeTypeRef = useRef<string>('audio/webm');
 
-  // Fetch script for current level (with user-specific shuffle)
-  const fetchLevelScript = async (level: number, userIdToUse?: number) => {
+  // Fetch batch of scripts for current level (with user-specific shuffle)
+  const fetchLevelScriptBatch = async (level: number, userIdToUse?: number) => {
     try {
       setIsLoadingSheet(true);
       setError(null);
@@ -55,17 +57,17 @@ export default function AudioCollector({}: AudioCollectorProps) {
         throw new Error('User ID not available');
       }
 
-      console.log(`📊 Fetching script for Level ${level}...`);
+      console.log(`📊 Fetching batch of scripts for Level ${level}...`);
       console.log(`  - Using User ID: ${effectiveUserId}`);
       
-      const response = await fetch(`/api/get-level-scripts?userId=${effectiveUserId}&level=${level}`);
+      const response = await fetch(`/api/get-level-scripts?userId=${effectiveUserId}&level=${level}&batchSize=5`);
       const data = await response.json();
 
       if (!response.ok) {
-        throw new Error(data.error || 'Failed to fetch level script');
+        throw new Error(data.error || 'Failed to fetch level scripts');
       }
 
-      if (!data.scriptText) {
+      if (!data.scripts || data.scripts.length === 0) {
         // Check if this is because level is complete or no more scripts exist
         if (data.levelComplete) {
           // Level is complete, move to next level
@@ -80,7 +82,8 @@ export default function AudioCollector({}: AudioCollectorProps) {
           setScriptsCompletedInLevel(0);
           setLevelComplete(false);
           setHasMoreRows(true);
-          await fetchLevelScript(nextLevel, userId || undefined);
+          setCurrentBatchIndex(0);
+          await fetchLevelScriptBatch(nextLevel, userId || undefined);
         } else {
           // No more scripts available at all
           setHasMoreRows(false);
@@ -88,23 +91,50 @@ export default function AudioCollector({}: AudioCollectorProps) {
           console.log('✅ No more scripts available');
         }
       } else {
-        setCurrentText(data.scriptText);
-        setCurrentRowIndex(data.originalRowIndex);
-        setScriptsCompletedInLevel(data.scriptIndexInLevel);
-        setHasMoreRows(!data.levelComplete && data.scriptsRemainingInLevel > 0);
+        // Store the batch and show first script
+        setScriptsBatch(data.scripts);
+        setCurrentBatchIndex(0);
+        setCurrentText(data.scripts[0].text);
+        setCurrentRowIndex(data.scripts[0].originalRowIndex);
+        setScriptsCompletedInLevel(data.scripts[0].scriptIndexInLevel);
+        setHasMoreRows(data.hasMoreInLevel || data.scripts.length > 1);
         setLevelComplete(data.levelComplete);
         
-        console.log(`✅ Loaded script for Level ${level}:`);
-        console.log(`  - Script ${data.scriptIndexInLevel + 1} of ${data.totalScriptsInLevel} in level`);
-        console.log(`  - Original row index: ${data.originalRowIndex}`);
+        console.log(`✅ Loaded batch of ${data.scripts.length} scripts for Level ${level}:`);
+        console.log(`  - Scripts ${data.batchStartIndex + 1} to ${data.batchEndIndex + 1} of ${data.totalScriptsInLevel}`);
         console.log(`  - Scripts remaining in level: ${data.scriptsRemainingInLevel}`);
+        console.log(`  - Has more in level: ${data.hasMoreInLevel}`);
       }
     } catch (error: any) {
-      console.error('❌ Error fetching level script:', error);
-      setError(error.message || 'Failed to fetch script');
+      console.error('❌ Error fetching level script batch:', error);
+      setError(error.message || 'Failed to fetch scripts');
       setCurrentText('');
     } finally {
       setIsLoadingSheet(false);
+    }
+  };
+
+  // Move to next script in current batch or fetch next batch
+  const moveToNextScript = async () => {
+    const nextBatchIndex = currentBatchIndex + 1;
+    
+    // Check if we have more scripts in current batch
+    if (nextBatchIndex < scriptsBatch.length) {
+      // Use next script from current batch
+      setCurrentBatchIndex(nextBatchIndex);
+      setCurrentText(scriptsBatch[nextBatchIndex].text);
+      setCurrentRowIndex(scriptsBatch[nextBatchIndex].originalRowIndex);
+      setScriptsCompletedInLevel(scriptsBatch[nextBatchIndex].scriptIndexInLevel);
+      console.log(`✅ Moving to next script in batch: ${nextBatchIndex + 1}/${scriptsBatch.length}`);
+    } else if (hasMoreRows && userId) {
+      // Current batch exhausted, fetch next batch
+      console.log(`📦 Current batch exhausted, fetching next batch...`);
+      await fetchLevelScriptBatch(currentLevel, userId);
+    } else {
+      // No more scripts
+      console.log(`❌ No more scripts available`);
+      setHasMoreRows(false);
+      setCurrentText('No more scripts available. All done! 🎉');
     }
   };
 
@@ -188,9 +218,9 @@ export default function AudioCollector({}: AudioCollectorProps) {
       console.log(`  - Scripts completed in level: ${scriptsCompleted}/50`);
       console.log(`  - Is new user: ${data.isNewUser}`);
 
-      // Fetch script for current level (with user-specific shuffle)
+      // Fetch batch of scripts for current level (with user-specific shuffle)
       // Pass userId directly to avoid timing issues with state updates
-      await fetchLevelScript(userLevel, receivedUserId);
+      await fetchLevelScriptBatch(userLevel, receivedUserId);
     } catch (error: any) {
       console.error('❌ Error loading user:', error);
       setError(error.message || 'Failed to load user progress');
@@ -628,10 +658,10 @@ export default function AudioCollector({}: AudioCollectorProps) {
           URL.revokeObjectURL(recordedAudio);
         }
         
-        // Fetch next script in current level
-        await fetchLevelScript(currentLevel, userId || undefined);
+        // Move to next script (from batch or fetch next batch)
+        await moveToNextScript();
       } else if (levelComplete) {
-        // Level complete, will be handled by fetchLevelScript
+        // Level complete, will be handled by fetchLevelScriptBatch
         console.log(`🎉 Level ${currentLevel} complete!`);
       }
     } catch (error: any) {

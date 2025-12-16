@@ -57,6 +57,7 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url);
     const userId = searchParams.get('userId');
     const level = parseInt(searchParams.get('level') || '1', 10);
+    const batchSize = parseInt(searchParams.get('batchSize') || '5', 10); // Default 5 scripts per batch
     const scriptsPerLevel = 50;
 
     if (!userId) {
@@ -185,14 +186,17 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({
         success: true,
         levelComplete: true,
-        scriptText: null,
+        scripts: [],
         message: `Level ${level} is complete!`,
       });
     }
     
-    const nextScriptRowIndex = scriptOrder[currentScriptIndex];
+    // Calculate batch range
+    const batchStartIndex = currentScriptIndex;
+    const batchEndIndex = Math.min(currentScriptIndex + batchSize, scriptOrder.length);
+    const batchRowIndices = scriptOrder.slice(batchStartIndex, batchEndIndex);
 
-    if (!nextScriptRowIndex) {
+    if (batchRowIndices.length === 0) {
       return NextResponse.json({
         success: false,
         error: 'No more scripts in this level',
@@ -200,43 +204,64 @@ export async function GET(request: NextRequest) {
       });
     }
 
-    // Fetch the specific script text
+    // Fetch all scripts in the batch from Google Sheets
     const auth = getGoogleClient();
     const sheets = google.sheets({ version: 'v4', auth });
-    const scriptRange = `${tabName}!A${nextScriptRowIndex}:A${nextScriptRowIndex}`;
+    
+    // Build range string for multiple rows (e.g., "A5:A9" for rows 5-9)
+    // Note: Google Sheets API can handle non-contiguous ranges, but it's easier to fetch each individually
+    // or we can fetch a larger range and filter. Let's fetch each script individually for accuracy.
+    const scripts = [];
+    
+    for (let i = 0; i < batchRowIndices.length; i++) {
+      const rowIndex = batchRowIndices[i];
+      const scriptRange = `${tabName}!A${rowIndex}:A${rowIndex}`;
+      
+      const scriptResponse = await sheets.spreadsheets.values.get({
+        spreadsheetId: sheetsId,
+        range: scriptRange,
+      });
 
-    const scriptResponse = await sheets.spreadsheets.values.get({
-      spreadsheetId: sheetsId,
-      range: scriptRange,
-    });
+      const scriptValues = scriptResponse.data.values;
+      const scriptText = scriptValues && scriptValues[0] && scriptValues[0][0] ? scriptValues[0][0] : '';
 
-    const scriptValues = scriptResponse.data.values;
-    const scriptText = scriptValues && scriptValues[0] && scriptValues[0][0] ? scriptValues[0][0] : '';
+      if (scriptText) {
+        scripts.push({
+          originalRowIndex: rowIndex,
+          text: scriptText,
+          indexInBatch: i,
+          scriptIndexInLevel: batchStartIndex + i,
+        });
+      }
+    }
 
-    if (!scriptText) {
+    if (scripts.length === 0) {
       return NextResponse.json({
         success: false,
-        error: 'Script text not found',
+        error: 'No valid scripts found in batch',
       }, { status: 404 });
     }
 
     const totalScriptsInLevel = scriptOrder.length;
-    const scriptsRemainingInLevel = totalScriptsInLevel - currentScriptIndex - 1;
+    const scriptsRemainingInLevel = totalScriptsInLevel - currentScriptIndex - scripts.length;
+    const hasMoreInLevel = currentScriptIndex + scripts.length < scriptOrder.length;
 
-    console.log(`✅ Returning script for level ${level}:`);
-    console.log(`  - Script ${currentScriptIndex + 1} of ${totalScriptsInLevel} in level`);
-    console.log(`  - Original row index: ${nextScriptRowIndex}`);
+    console.log(`✅ Returning batch of ${scripts.length} scripts for level ${level}:`);
+    console.log(`  - Batch: scripts ${currentScriptIndex + 1} to ${currentScriptIndex + scripts.length} of ${totalScriptsInLevel}`);
     console.log(`  - Scripts remaining in level: ${scriptsRemainingInLevel}`);
+    console.log(`  - Has more in level: ${hasMoreInLevel}`);
 
     return NextResponse.json({
       success: true,
       level: level,
-      scriptText: scriptText,
-      originalRowIndex: nextScriptRowIndex,
-      scriptIndexInLevel: currentScriptIndex,
+      scripts: scripts,
+      batchStartIndex: batchStartIndex,
+      batchEndIndex: batchStartIndex + scripts.length - 1,
+      currentScriptIndex: currentScriptIndex,
       totalScriptsInLevel: totalScriptsInLevel,
       scriptsRemainingInLevel: scriptsRemainingInLevel,
-      levelComplete: scriptsRemainingInLevel === 0,
+      hasMoreInLevel: hasMoreInLevel,
+      levelComplete: !hasMoreInLevel,
     });
   } catch (error: any) {
     console.error('❌ Error getting level scripts:', error);
