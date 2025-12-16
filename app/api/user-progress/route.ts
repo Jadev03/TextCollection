@@ -139,7 +139,7 @@ export async function POST(request: NextRequest) {
     // Get current user state
     const { data: currentUser, error: fetchError } = await supabaseServer
       .from('users')
-      .select('id, last_script_id, current_level, scripts_completed_in_level, session_id, version')
+      .select('id, last_script_id, current_level, scripts_completed_in_level, session_id, version, level_script_order')
       .eq('id', userId)
       .single();
 
