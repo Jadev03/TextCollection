@@ -5,9 +5,10 @@ import { useState, useEffect } from 'react';
 interface UsernameModalProps {
   isOpen: boolean;
   onSubmit: (username: string) => void;
+  isLoading?: boolean;
 }
 
-export default function UsernameModal({ isOpen, onSubmit }: UsernameModalProps) {
+export default function UsernameModal({ isOpen, onSubmit, isLoading = false }: UsernameModalProps) {
   const [username, setUsername] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -95,13 +96,13 @@ export default function UsernameModal({ isOpen, onSubmit }: UsernameModalProps) 
 
           <button
             type="submit"
-            disabled={isSubmitting || !username.trim()}
+            disabled={isSubmitting || isLoading || !username.trim()}
             className="w-full py-3 px-6 bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white rounded-lg shadow-md hover:shadow-lg transition-all duration-300 transform hover:scale-105 active:scale-95 font-medium disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none"
           >
-            {isSubmitting ? (
+            {(isSubmitting || isLoading) ? (
               <span className="flex items-center justify-center gap-2">
                 <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div>
-                Loading...
+                {isLoading ? 'Loading...' : 'Submitting...'}
               </span>
             ) : (
               'OK - Continue'

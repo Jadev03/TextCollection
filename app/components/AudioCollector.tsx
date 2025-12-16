@@ -197,7 +197,7 @@ export default function AudioCollector({}: AudioCollectorProps) {
       setSessionId(data.sessionId || currentSessionId);
       setUserVersion(data.version || 0);
       setIsSessionValid(true);
-      setShowUsernameModal(false);
+      // Keep modal open to show loading, close it after everything loads
 
       // Start periodic session validation
       startSessionValidation(data.userId, data.sessionId || currentSessionId);
@@ -221,9 +221,13 @@ export default function AudioCollector({}: AudioCollectorProps) {
       // Fetch batch of scripts for current level (with user-specific shuffle)
       // Pass userId directly to avoid timing issues with state updates
       await fetchLevelScriptBatch(userLevel, receivedUserId);
+      
+      // Close modal after everything is loaded
+      setShowUsernameModal(false);
     } catch (error: any) {
       console.error('❌ Error loading user:', error);
       setError(error.message || 'Failed to load user progress');
+      // Don't close modal on error so user can try again
     } finally {
       setIsLoadingUser(false);
     }
@@ -685,7 +689,28 @@ export default function AudioCollector({}: AudioCollectorProps) {
       <UsernameModal
         isOpen={showUsernameModal}
         onSubmit={handleUsernameSubmit}
+        isLoading={isLoadingUser}
       />
+      
+      {/* Full Page Loading Overlay - Shows after username is submitted */}
+      {isLoadingUser && !showUsernameModal && (
+        <div className="fixed inset-0 bg-white dark:bg-gray-900 z-50 flex items-center justify-center">
+          <div className="text-center space-y-4">
+            <div className="relative w-20 h-20 mx-auto">
+              <div className="absolute inset-0 border-4 border-blue-200 dark:border-blue-800 rounded-full"></div>
+              <div className="absolute inset-0 border-4 border-blue-600 dark:border-blue-400 border-t-transparent rounded-full animate-spin"></div>
+            </div>
+            <div className="space-y-2">
+              <h3 className="text-xl font-semibold text-gray-800 dark:text-gray-200">
+                Loading Your Progress...
+              </h3>
+              <p className="text-sm text-gray-600 dark:text-gray-400">
+                Please wait while we fetch your scripts
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="w-full max-w-4xl mx-auto p-6 space-y-8">
         {/* Session Invalidated Warning */}
