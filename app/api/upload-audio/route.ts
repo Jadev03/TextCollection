@@ -9,9 +9,10 @@ export async function POST(request: NextRequest) {
     const formData = await request.formData();
     const audioFile = formData.get('audio') as File;
     const mimeType = formData.get('mimeType') as string;
-    const scriptId = formData.get('scriptId') as string; // Row index from Google Sheets
+    const originalRowIndex = formData.get('originalRowIndex') as string; // Original row index from Google Sheets
     const scriptText = formData.get('scriptText') as string; // Text from Google Sheets
     const userIdentifier = formData.get('userIdentifier') as string || 'default_user'; // Optional user identifier
+    const level = formData.get('level') as string; // Current level
 
     if (!audioFile) {
       return NextResponse.json(
@@ -106,7 +107,8 @@ export async function POST(request: NextRequest) {
     let supabaseRecordId = null;
     try {
       console.log('💾 Saving recording to Supabase...');
-      console.log('  - script_id:', scriptId);
+      console.log('  - level:', level);
+      console.log('  - original_row_index:', originalRowIndex);
       console.log('  - script_text:', scriptText?.substring(0, 50) + (scriptText && scriptText.length > 50 ? '...' : ''));
       console.log('  - google_drive_link:', fileWebViewLink);
       console.log('  - file_name:', fileName);
@@ -114,7 +116,7 @@ export async function POST(request: NextRequest) {
       const { data, error } = await supabaseServer
         .from('recordings')
         .insert({
-          script_id: scriptId ? parseInt(scriptId, 10) : null,
+          script_id: originalRowIndex ? parseInt(originalRowIndex, 10) : null, // Use original row index
           script_text: scriptText || null,
           google_drive_link: fileWebViewLink || null,
           file_name: fileName,

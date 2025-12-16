@@ -14,13 +14,14 @@ export default function AudioCollector({}: AudioCollectorProps) {
   const [isSessionValid, setIsSessionValid] = useState<boolean>(true);
   const [isLoadingUser, setIsLoadingUser] = useState<boolean>(false);
   const sessionCheckIntervalRef = useRef<NodeJS.Timeout | null>(null);
-  const [scriptsBatch, setScriptsBatch] = useState<Array<{ rowIndex: number; text: string }>>([]);
-  const [currentScriptIndex, setCurrentScriptIndex] = useState<number>(0);
+  const [currentLevel, setCurrentLevel] = useState<number>(1);
+  const [totalLevels, setTotalLevels] = useState<number>(0);
+  const [scriptsCompletedInLevel, setScriptsCompletedInLevel] = useState<number>(0);
   const [currentText, setCurrentText] = useState<string>('');
   const [currentRowIndex, setCurrentRowIndex] = useState<number>(1);
   const [isLoadingSheet, setIsLoadingSheet] = useState<boolean>(false);
   const [hasMoreRows, setHasMoreRows] = useState<boolean>(true);
-  const [nextStartRow, setNextStartRow] = useState<number | null>(null);
+  const [levelComplete, setLevelComplete] = useState<boolean>(false);
   const [isRecording, setIsRecording] = useState(false);
   const [recordedAudio, setRecordedAudio] = useState<string | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -41,87 +42,69 @@ export default function AudioCollector({}: AudioCollectorProps) {
   const audioBlobRef = useRef<Blob | null>(null);
   const mimeTypeRef = useRef<string>('audio/webm');
 
-  // Fetch batch of scripts from Google Sheets (pagination)
-  const fetchScriptsBatch = async (startRow: number, limit: number = 10) => {
+  // Fetch script for current level (with user-specific shuffle)
+  const fetchLevelScript = async (level: number, userIdToUse?: number) => {
     try {
       setIsLoadingSheet(true);
       setError(null);
       
-      console.log(`📊 Fetching scripts batch starting from row ${startRow} (limit: ${limit})...`);
+      // Use provided userId or fall back to state
+      const effectiveUserId = userIdToUse || userId;
       
-      const response = await fetch(`/api/fetch-sheet-row?startRow=${startRow}&limit=${limit}`);
+      if (!effectiveUserId) {
+        throw new Error('User ID not available');
+      }
+
+      console.log(`📊 Fetching script for Level ${level}...`);
+      console.log(`  - Using User ID: ${effectiveUserId}`);
+      
+      const response = await fetch(`/api/get-level-scripts?userId=${effectiveUserId}&level=${level}`);
       const data = await response.json();
 
       if (!response.ok) {
-        throw new Error(data.error || 'Failed to fetch scripts from Google Sheets');
+        throw new Error(data.error || 'Failed to fetch level script');
       }
 
-      if (!data.scripts || data.scripts.length === 0) {
-        // No scripts returned at all
-        setHasMoreRows(false);
-        setScriptsBatch([]);
-        setNextStartRow(null);
-        setCurrentText('No more scripts available. All done! 🎉');
-        console.log('✅ No more scripts available (empty response)');
-      } else {
-        setScriptsBatch(data.scripts);
-        setNextStartRow(data.nextStartRow);
-        // hasMoreRows should be true if there's a nextStartRow (meaning more data exists)
-        // OR if we have scripts in the current batch that we haven't shown yet
-        setHasMoreRows(data.nextStartRow !== null || data.scripts.length > 1);
-        setCurrentScriptIndex(0); // Start from first script in batch
-        
-        // Set current script
-        if (data.scripts.length > 0) {
-          setCurrentText(data.scripts[0].text);
-          setCurrentRowIndex(data.scripts[0].rowIndex);
+      if (!data.scriptText) {
+        // Check if this is because level is complete or no more scripts exist
+        if (data.levelComplete) {
+          // Level is complete, move to next level
+          setLevelComplete(true);
+          setCurrentText(`🎉 Level ${level} Complete! Moving to Level ${level + 1}...`);
+          console.log(`✅ Level ${level} completed!`);
+          
+          // Small delay then fetch next level
+          await new Promise(resolve => setTimeout(resolve, 2000));
+          const nextLevel = level + 1;
+          setCurrentLevel(nextLevel);
+          setScriptsCompletedInLevel(0);
+          setLevelComplete(false);
+          setHasMoreRows(true);
+          await fetchLevelScript(nextLevel, userId || undefined);
+        } else {
+          // No more scripts available at all
+          setHasMoreRows(false);
+          setCurrentText('No more scripts available. All done! 🎉');
+          console.log('✅ No more scripts available');
         }
+      } else {
+        setCurrentText(data.scriptText);
+        setCurrentRowIndex(data.originalRowIndex);
+        setScriptsCompletedInLevel(data.scriptIndexInLevel);
+        setHasMoreRows(!data.levelComplete && data.scriptsRemainingInLevel > 0);
+        setLevelComplete(data.levelComplete);
         
-        console.log(`✅ Loaded ${data.scripts.length} scripts (rows ${data.startRow}-${data.endRow})`);
-        console.log(`  - Has more (API): ${data.hasMore}`);
-        console.log(`  - Next batch starts at row: ${data.nextStartRow || 'N/A'}`);
-        console.log(`  - Setting hasMoreRows to: ${data.nextStartRow !== null || data.scripts.length > 1}`);
-        console.log(`  - Scripts in batch: ${data.scripts.map((s: { rowIndex: number; text: string }) => s.rowIndex).join(', ')}`);
+        console.log(`✅ Loaded script for Level ${level}:`);
+        console.log(`  - Script ${data.scriptIndexInLevel + 1} of ${data.totalScriptsInLevel} in level`);
+        console.log(`  - Original row index: ${data.originalRowIndex}`);
+        console.log(`  - Scripts remaining in level: ${data.scriptsRemainingInLevel}`);
       }
     } catch (error: any) {
-      console.error('❌ Error fetching scripts batch:', error);
-      setError(error.message || 'Failed to fetch data from Google Sheets');
+      console.error('❌ Error fetching level script:', error);
+      setError(error.message || 'Failed to fetch script');
       setCurrentText('');
-      setScriptsBatch([]);
     } finally {
       setIsLoadingSheet(false);
-    }
-  };
-
-  // Move to next script in current batch or fetch next batch
-  const moveToNextScript = async () => {
-    const nextIndex = currentScriptIndex + 1;
-    
-    console.log(`📄 Attempting to move to next script:`);
-    console.log(`  - Current index: ${currentScriptIndex}`);
-    console.log(`  - Next index: ${nextIndex}`);
-    console.log(`  - Batch size: ${scriptsBatch.length}`);
-    console.log(`  - Has more rows: ${hasMoreRows}`);
-    console.log(`  - Next start row: ${nextStartRow}`);
-    
-    // Check if we have more scripts in current batch
-    if (nextIndex < scriptsBatch.length) {
-      // Use next script from current batch
-      setCurrentScriptIndex(nextIndex);
-      setCurrentText(scriptsBatch[nextIndex].text);
-      setCurrentRowIndex(scriptsBatch[nextIndex].rowIndex);
-      console.log(`✅ Moving to next script in batch: ${nextIndex + 1}/${scriptsBatch.length}`);
-    } else if (hasMoreRows && nextStartRow) {
-      // Current batch exhausted, fetch next batch
-      console.log(`📦 Current batch exhausted, fetching next batch from row ${nextStartRow}`);
-      await fetchScriptsBatch(nextStartRow);
-    } else {
-      // No more scripts
-      console.log(`❌ No more scripts available`);
-      console.log(`  - hasMoreRows: ${hasMoreRows}`);
-      console.log(`  - nextStartRow: ${nextStartRow}`);
-      setHasMoreRows(false);
-      setCurrentText('No more scripts available. All done! 🎉');
     }
   };
 
@@ -140,6 +123,23 @@ export default function AudioCollector({}: AudioCollectorProps) {
     console.log(`🆔 New session created: ${newSessionId}`);
   }, []);
 
+  // Fetch total levels from Google Sheets
+  const fetchTotalLevels = async () => {
+    try {
+      const response = await fetch('/api/get-total-scripts');
+      const data = await response.json();
+
+      if (response.ok && data.success) {
+        setTotalLevels(data.totalLevels || 0);
+        console.log(`📊 Total levels loaded: ${data.totalLevels} (${data.totalScripts} total scripts)`);
+      } else {
+        console.warn('⚠️ Failed to fetch total levels:', data.error);
+      }
+    } catch (error: any) {
+      console.warn('⚠️ Error fetching total levels:', error);
+    }
+  };
+
   // Handle username submission
   const handleUsernameSubmit = async (enteredUsername: string) => {
     setIsLoadingUser(true);
@@ -150,6 +150,9 @@ export default function AudioCollector({}: AudioCollectorProps) {
       const normalizedUsername = enteredUsername.trim().toLowerCase();
       const currentSessionId = sessionId || crypto.randomUUID();
       console.log(`👤 Getting user progress for: ${normalizedUsername} (Session: ${currentSessionId})`);
+      
+      // Fetch total levels in parallel
+      await fetchTotalLevels();
       
       const response = await fetch(`/api/user-progress?username=${encodeURIComponent(normalizedUsername)}&sessionId=${currentSessionId}`);
       const data = await response.json();
@@ -169,19 +172,25 @@ export default function AudioCollector({}: AudioCollectorProps) {
       // Start periodic session validation
       startSessionValidation(data.userId, data.sessionId || currentSessionId);
 
-      // Start from the next script after their last completed one
-      const startScriptId = data.nextScriptId;
-      setCurrentRowIndex(startScriptId);
+      // Set level and progress
+      const userLevel = data.currentLevel || 1;
+      const scriptsCompleted = data.scriptsCompletedInLevel || 0;
+      const receivedUserId = data.userId;
+      
+      setCurrentLevel(userLevel);
+      setScriptsCompletedInLevel(scriptsCompleted);
+      setUserId(receivedUserId); // Set userId state
       
       console.log(`✅ User loaded: ${enteredUsername}`);
-      console.log(`  - User ID: ${data.userId}`);
+      console.log(`  - User ID: ${receivedUserId}`);
       console.log(`  - Session ID: ${data.sessionId}`);
-      console.log(`  - Last completed script: ${data.lastScriptId}`);
-      console.log(`  - Starting from script: ${startScriptId}`);
+      console.log(`  - Current Level: ${userLevel}`);
+      console.log(`  - Scripts completed in level: ${scriptsCompleted}/50`);
       console.log(`  - Is new user: ${data.isNewUser}`);
 
-      // Fetch first batch of scripts starting from user's next script
-      await fetchScriptsBatch(startScriptId, 10);
+      // Fetch script for current level (with user-specific shuffle)
+      // Pass userId directly to avoid timing issues with state updates
+      await fetchLevelScript(userLevel, receivedUserId);
     } catch (error: any) {
       console.error('❌ Error loading user:', error);
       setError(error.message || 'Failed to load user progress');
@@ -503,13 +512,16 @@ export default function AudioCollector({}: AudioCollectorProps) {
       }
       formData.append('audio', audioBlobRef.current, `recording.${fileExtension}`);
       formData.append('mimeType', mimeTypeRef.current);
-      formData.append('scriptId', currentRowIndex.toString()); // Row index from Google Sheets
+      formData.append('originalRowIndex', currentRowIndex.toString()); // Original row index from Google Sheets
       formData.append('scriptText', currentText); // Text from Google Sheets
       formData.append('userIdentifier', username || 'default_user'); // Username
       formData.append('userId', userId?.toString() || ''); // User ID for progress tracking
+      formData.append('level', currentLevel.toString()); // Current level
       
       console.log('  - File extension:', fileExtension);
-      console.log('  - Script ID (row index):', currentRowIndex);
+      console.log('  - Level:', currentLevel);
+      console.log('  - Script in level:', scriptsCompletedInLevel + 1);
+      console.log('  - Original row index:', currentRowIndex);
       console.log('  - Script text:', currentText.substring(0, 50) + (currentText.length > 50 ? '...' : ''));
       console.log('  - Uploading with preserved format...');
 
@@ -541,10 +553,10 @@ export default function AudioCollector({}: AudioCollectorProps) {
         console.log('  - ✅ Saved to Supabase recordings table');
       }
 
-      // Update user progress in Supabase
+      // Update user progress in Supabase (level-based)
       if (userId) {
         try {
-          console.log(`💾 Updating user progress: Script ${currentRowIndex}, Session: ${sessionId}`);
+          console.log(`💾 Updating user progress: Level ${currentLevel}, Script Row ${currentRowIndex}, Session: ${sessionId}`);
           const progressResponse = await fetch('/api/user-progress', {
             method: 'POST',
             headers: {
@@ -552,7 +564,7 @@ export default function AudioCollector({}: AudioCollectorProps) {
             },
             body: JSON.stringify({
               userId: userId,
-              scriptId: currentRowIndex,
+              originalRowIndex: currentRowIndex,
               sessionId: sessionId,
               expectedVersion: userVersion,
             }),
@@ -578,6 +590,14 @@ export default function AudioCollector({}: AudioCollectorProps) {
             } else {
               console.log('✅ User progress updated successfully');
               setUserVersion(progressData.version || userVersion + 1);
+              setCurrentLevel(progressData.currentLevel || currentLevel);
+              setScriptsCompletedInLevel(progressData.scriptsCompletedInLevel || 0);
+              
+              // Check if level is complete
+              if (progressData.levelComplete) {
+                console.log(`🎉 Level ${currentLevel} completed! Moving to level ${progressData.currentLevel}`);
+                setLevelComplete(true);
+              }
             }
           } else {
             if (progressData.error === 'SESSION_INVALIDATED') {
@@ -592,12 +612,11 @@ export default function AudioCollector({}: AudioCollectorProps) {
         }
       }
 
-      // After successful upload, fetch next row
-      if (hasMoreRows) {
-        const nextRowIndex = currentRowIndex + 1;
-        console.log(`\n📥 Upload complete! Loading next row (${nextRowIndex})...\n`);
+      // After successful upload, fetch next script in level
+      if (hasMoreRows && !levelComplete) {
+        console.log(`\n📥 Upload complete! Loading next script in level ${currentLevel}...\n`);
         
-        // Small delay to show success message before loading next row
+        // Small delay to show success message before loading next script
         await new Promise(resolve => setTimeout(resolve, 1500));
         
         // Reset recording state
@@ -609,8 +628,11 @@ export default function AudioCollector({}: AudioCollectorProps) {
           URL.revokeObjectURL(recordedAudio);
         }
         
-        // Move to next script (from batch or fetch next batch)
-        await moveToNextScript();
+        // Fetch next script in current level
+        await fetchLevelScript(currentLevel, userId || undefined);
+      } else if (levelComplete) {
+        // Level complete, will be handled by fetchLevelScript
+        console.log(`🎉 Level ${currentLevel} complete!`);
       }
     } catch (error: any) {
       console.error('Upload error:', error);
@@ -668,9 +690,78 @@ export default function AudioCollector({}: AudioCollectorProps) {
             {username ? `Welcome, ${username}! Read the text below and record your audio` : 'Read the text below and record your audio'}
           </p>
           {username && (
-            <p className="text-sm text-gray-500 dark:text-gray-400 mt-2">
-              Script {currentRowIndex} of {currentRowIndex}+
-            </p>
+            <div className="mt-4 flex items-center justify-center gap-6">
+              {/* Circular Progress Bar for Levels */}
+              {totalLevels > 0 && (
+                <div className="flex flex-col items-center">
+                  <div className="relative w-20 h-20">
+                    <svg className="transform -rotate-90 w-20 h-20">
+                      <circle
+                        cx="40"
+                        cy="40"
+                        r="36"
+                        stroke="currentColor"
+                        strokeWidth="8"
+                        fill="none"
+                        className="text-gray-200 dark:text-gray-700"
+                      />
+                      <circle
+                        cx="40"
+                        cy="40"
+                        r="36"
+                        stroke="currentColor"
+                        strokeWidth="8"
+                        fill="none"
+                        strokeDasharray={`${2 * Math.PI * 36}`}
+                        strokeDashoffset={`${2 * Math.PI * 36 * (1 - (currentLevel - 1) / totalLevels)}`}
+                        strokeLinecap="round"
+                        className="text-green-600 dark:text-green-500 transition-all duration-500"
+                      />
+                    </svg>
+                    <div className="absolute inset-0 flex items-center justify-center">
+                      <div className="text-center">
+                        <div className="text-lg font-bold text-gray-800 dark:text-gray-200">
+                          {currentLevel - 1}
+                        </div>
+                        <div className="text-xs text-gray-500 dark:text-gray-400">
+                          / {totalLevels}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  <p className="text-xs text-gray-600 dark:text-gray-400 mt-1">Levels</p>
+                </div>
+              )}
+              
+              {/* Linear Progress Bar for Current Level */}
+              <div className="flex-1 max-w-md">
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-sm font-semibold text-gray-700 dark:text-gray-300">
+                    Level {currentLevel} Progress
+                  </span>
+                  <span className="text-sm text-gray-600 dark:text-gray-400">
+                    {scriptsCompletedInLevel + 1} / 50
+                  </span>
+                </div>
+                <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-3 overflow-hidden">
+                  <div 
+                    className="bg-gradient-to-r from-blue-500 to-blue-600 dark:from-blue-600 dark:to-blue-700 h-3 rounded-full transition-all duration-500 flex items-center justify-end pr-2"
+                    style={{ width: `${((scriptsCompletedInLevel + 1) / 50) * 100}%` }}
+                  >
+                    {((scriptsCompletedInLevel + 1) / 50) * 100 > 10 && (
+                      <span className="text-xs font-medium text-white">
+                        {Math.round(((scriptsCompletedInLevel + 1) / 50) * 100)}%
+                      </span>
+                    )}
+                  </div>
+                </div>
+                {levelComplete && (
+                  <p className="text-xs text-green-600 dark:text-green-400 font-medium mt-1 text-center">
+                    🎉 Level {currentLevel} Complete!
+                  </p>
+                )}
+              </div>
+            </div>
           )}
         </div>
 
@@ -693,11 +784,6 @@ export default function AudioCollector({}: AudioCollectorProps) {
               <p className="text-lg leading-relaxed text-gray-800 dark:text-gray-200 font-medium">
                 {currentText || 'No text available'}
               </p>
-              {hasMoreRows && (
-                <p className="text-sm text-gray-500 dark:text-gray-400 mt-4">
-                  Row {currentRowIndex} of {currentRowIndex}+
-                </p>
-              )}
             </>
           )}
         </div>

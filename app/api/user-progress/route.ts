@@ -23,7 +23,7 @@ export async function GET(request: NextRequest) {
     // Check if user exists (case-insensitive search)
     const { data: existingUser, error: fetchError } = await supabaseServer
       .from('users')
-      .select('id, username, last_script_id, session_id, last_activity, version')
+      .select('id, username, last_script_id, current_level, scripts_completed_in_level, session_id, last_activity, version')
       .eq('username', username)
       .single();
 
@@ -42,19 +42,19 @@ export async function GET(request: NextRequest) {
           last_activity: new Date().toISOString(),
         })
         .eq('id', existingUser.id)
-        .select('id, username, last_script_id, version')
+        .select('id, username, last_script_id, current_level, scripts_completed_in_level, version')
         .single();
 
       if (updateError) {
         throw updateError;
       }
 
-      const lastScriptId = updatedUser.last_script_id || 0;
-      const nextScriptId = lastScriptId + 1;
+      const currentLevel = updatedUser.current_level || 1;
+      const scriptsCompletedInLevel = updatedUser.scripts_completed_in_level || 0;
       
       console.log(`✅ User found: ${username}`);
-      console.log(`  - Last script ID: ${lastScriptId}`);
-      console.log(`  - Next script ID: ${nextScriptId}`);
+      console.log(`  - Current Level: ${currentLevel}`);
+      console.log(`  - Scripts completed in level: ${scriptsCompletedInLevel}/50`);
       console.log(`  - New session activated: ${sessionId}`);
       if (existingUser.session_id && existingUser.session_id !== sessionId) {
         console.log(`  - Previous session invalidated: ${existingUser.session_id}`);
@@ -64,8 +64,8 @@ export async function GET(request: NextRequest) {
         success: true,
         userId: updatedUser.id,
         username: updatedUser.username,
-        lastScriptId: lastScriptId,
-        nextScriptId: nextScriptId,
+        currentLevel: currentLevel,
+        scriptsCompletedInLevel: scriptsCompletedInLevel,
         version: updatedUser.version,
         sessionId: sessionId,
         isNewUser: false,
@@ -78,13 +78,15 @@ export async function GET(request: NextRequest) {
         .from('users')
         .insert({
           username: username, // Store in lowercase
-          last_script_id: 0, // Start from script 1 (0 means haven't completed any)
+          last_script_id: 0, // Keep for backward compatibility
+          current_level: 1, // Start at level 1
+          scripts_completed_in_level: 0, // No scripts completed in level yet
           session_id: sessionId,
           last_activity: new Date().toISOString(),
           version: 0,
           created_at: new Date().toISOString(),
         })
-        .select('id, username, last_script_id, version')
+        .select('id, username, current_level, scripts_completed_in_level, version')
         .single();
 
       if (createError) {
@@ -93,17 +95,16 @@ export async function GET(request: NextRequest) {
 
       console.log(`✅ New user created: ${username}`);
       console.log(`  - User ID: ${newUser.id}`);
-      console.log(`  - Starting from script 1`);
+      console.log(`  - Starting at Level 1`);
 
       return NextResponse.json({
         success: true,
         userId: newUser.id,
         username: newUser.username,
-        lastScriptId: 0,
-        nextScriptId: 1,
+        currentLevel: 1,
+        scriptsCompletedInLevel: 0,
         version: newUser.version,
         sessionId: sessionId,
-        hasConcurrentSession: false,
         isNewUser: true,
       });
     }
@@ -120,25 +121,25 @@ export async function GET(request: NextRequest) {
   }
 }
 
-// Update user's last script after successful upload
+// Update user's progress after successful upload (level-based)
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { userId, scriptId, sessionId, expectedVersion } = body;
+    const { userId, originalRowIndex, sessionId, expectedVersion } = body;
 
-    if (!userId || scriptId === undefined) {
+    if (!userId || originalRowIndex === undefined) {
       return NextResponse.json(
-        { error: 'userId and scriptId are required' },
+        { error: 'userId and originalRowIndex are required' },
         { status: 400 }
       );
     }
 
-    console.log(`💾 Updating user progress: User ${userId}, Script ${scriptId}, Session: ${sessionId}`);
+    console.log(`💾 Updating user progress: User ${userId}, Script Row ${originalRowIndex}, Session: ${sessionId}`);
 
     // Get current user state
     const { data: currentUser, error: fetchError } = await supabaseServer
       .from('users')
-      .select('id, last_script_id, session_id, version')
+      .select('id, last_script_id, current_level, scripts_completed_in_level, session_id, version')
       .eq('id', userId)
       .single();
 
@@ -157,34 +158,39 @@ export async function POST(request: NextRequest) {
       }, { status: 409 }); // 409 Conflict
     }
 
-    // Use atomic update with optimistic locking
-    // Only update if scriptId is greater than current (prevent going backwards)
-    // And optionally check version for additional safety
-    const shouldUpdate = scriptId > (currentUser.last_script_id || 0);
-    
-    if (!shouldUpdate) {
-      console.warn(`⚠️ Script ID ${scriptId} is not greater than current ${currentUser.last_script_id}, skipping update`);
-      return NextResponse.json({
-        success: true,
-        userId: currentUser.id,
-        lastScriptId: currentUser.last_script_id,
-        skipped: true,
-        message: 'Script ID is not greater than current progress',
-      });
+    const currentLevel = currentUser.current_level || 1;
+    const scriptsCompletedInLevel = currentUser.scripts_completed_in_level || 0;
+    const newScriptsCompleted = scriptsCompletedInLevel + 1;
+    const scriptsPerLevel = 50;
+
+    // Check if level is complete (completed all 50 scripts)
+    const levelComplete = newScriptsCompleted >= scriptsPerLevel;
+    const nextLevel = levelComplete ? currentLevel + 1 : currentLevel;
+    const nextScriptsCompleted = levelComplete ? 0 : newScriptsCompleted;
+
+    console.log(`📊 Level progress update:`);
+    console.log(`  - Current level: ${currentLevel}`);
+    console.log(`  - Scripts completed in level: ${scriptsCompletedInLevel} → ${newScriptsCompleted}`);
+    console.log(`  - Level complete: ${levelComplete}`);
+    if (levelComplete) {
+      console.log(`  - Moving to level ${nextLevel}`);
     }
 
     // Atomic update with version increment
     const { data, error } = await supabaseServer
       .from('users')
       .update({
-        last_script_id: scriptId,
+        last_script_id: originalRowIndex, // Keep for backward compatibility
+        current_level: nextLevel,
+        scripts_completed_in_level: nextScriptsCompleted,
+        level_script_order: levelComplete ? null : currentUser.level_script_order, // Clear order when level complete
         session_id: sessionId || currentUser.session_id,
         last_activity: new Date().toISOString(),
         version: (currentUser.version || 0) + 1,
         updated_at: new Date().toISOString(),
       })
       .eq('id', userId)
-      .gte('last_script_id', currentUser.last_script_id) // Only update if no one else updated
+      .eq('scripts_completed_in_level', scriptsCompletedInLevel) // Only update if no one else updated
       .select()
       .single();
 
@@ -193,30 +199,35 @@ export async function POST(request: NextRequest) {
     }
 
     // Check if update actually happened (race condition detection)
-    if (!data || data.last_script_id !== scriptId) {
+    if (!data || data.scripts_completed_in_level !== nextScriptsCompleted) {
       console.warn(`⚠️ Race condition detected: Update may have been overwritten`);
       // Fetch latest state
       const { data: latestUser } = await supabaseServer
         .from('users')
-        .select('id, last_script_id')
+        .select('id, current_level, scripts_completed_in_level')
         .eq('id', userId)
         .single();
 
       return NextResponse.json({
         success: true,
         userId: latestUser?.id,
-        lastScriptId: latestUser?.last_script_id,
+        currentLevel: latestUser?.current_level,
+        scriptsCompletedInLevel: latestUser?.scripts_completed_in_level,
         conflict: true,
         message: 'Progress was updated by another session. Please refresh.',
       });
     }
 
-    console.log(`✅ User progress updated successfully to script ${scriptId}`);
+    console.log(`✅ User progress updated successfully`);
+    console.log(`  - Level: ${data.current_level}`);
+    console.log(`  - Scripts completed in level: ${data.scripts_completed_in_level}/50`);
 
     return NextResponse.json({
       success: true,
       userId: data.id,
-      lastScriptId: data.last_script_id,
+      currentLevel: data.current_level,
+      scriptsCompletedInLevel: data.scripts_completed_in_level,
+      levelComplete: levelComplete,
       version: data.version,
     });
   } catch (error: any) {
