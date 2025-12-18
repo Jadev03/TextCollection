@@ -951,7 +951,7 @@ export default function AudioCollector({}: AudioCollectorProps) {
                 {isUploading && (
                   <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-xl p-4 flex items-center gap-3">
                     <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-blue-600"></div>
-                    <p className="text-blue-800 dark:text-blue-200">Uploading to Google Drive...</p>
+                    <p className="text-blue-800 dark:text-blue-200">Uploading ...</p>
                   </div>
                 )}
 
