@@ -83,7 +83,8 @@ export default function AudioCollector({}: AudioCollectorProps) {
           setLevelComplete(false);
           setHasMoreRows(true);
           setCurrentBatchIndex(0);
-          await fetchLevelScriptBatch(nextLevel, userId || undefined);
+          // Use the already-resolved user id to avoid any state timing issues
+          await fetchLevelScriptBatch(nextLevel, effectiveUserId);
         } else {
           // No more scripts available at all
           setHasMoreRows(false);
@@ -587,6 +588,10 @@ export default function AudioCollector({}: AudioCollectorProps) {
         console.log('  - ✅ Saved to Supabase recordings table');
       }
 
+      // Track progress response so we can navigate deterministically (avoid stale React state reads)
+      let progressIndicatesLevelComplete = false;
+      let progressNextLevel: number | null = null;
+
       // Update user progress in Supabase (level-based)
       if (userId) {
         try {
@@ -624,13 +629,21 @@ export default function AudioCollector({}: AudioCollectorProps) {
             } else {
               console.log('✅ User progress updated successfully');
               setUserVersion(progressData.version || userVersion + 1);
-              setCurrentLevel(progressData.currentLevel || currentLevel);
-              setScriptsCompletedInLevel(progressData.scriptsCompletedInLevel || 0);
+              const updatedLevel: number = progressData.currentLevel ?? currentLevel;
+              const updatedScriptsCompleted: number =
+                typeof progressData.scriptsCompletedInLevel === 'number'
+                  ? progressData.scriptsCompletedInLevel
+                  : 0;
+
+              setCurrentLevel(updatedLevel);
+              setScriptsCompletedInLevel(updatedScriptsCompleted);
               
               // Check if level is complete
               if (progressData.levelComplete) {
-                console.log(`🎉 Level ${currentLevel} completed! Moving to level ${progressData.currentLevel}`);
+                console.log(`🎉 Level ${currentLevel} completed! Moving to level ${updatedLevel}`);
                 setLevelComplete(true);
+                progressIndicatesLevelComplete = true;
+                progressNextLevel = updatedLevel;
               }
             }
           } else {
@@ -644,6 +657,37 @@ export default function AudioCollector({}: AudioCollectorProps) {
         } catch (progressError) {
           console.warn('⚠️ Error updating user progress (non-critical):', progressError);
         }
+      }
+
+      // If the progress update says the level is complete, immediately load the next level.
+      // This avoids relying on `levelComplete`/`currentLevel` React state updates happening
+      // before we decide what to fetch next (which can cause the wrong level to be fetched).
+      if (progressIndicatesLevelComplete && userId) {
+        const finishedLevel = currentLevel;
+        const nextLevel = progressNextLevel ?? finishedLevel + 1;
+
+        console.log(`\n🎉 Level ${finishedLevel} complete! Auto-loading Level ${nextLevel}...\n`);
+        setCurrentText(`🎉 Level ${finishedLevel} Complete! Moving to Level ${nextLevel}...`);
+
+        // Small delay to show success/transition message before loading next level
+        await new Promise(resolve => setTimeout(resolve, 2000));
+
+        // Reset recording state
+        setHasRecorded(false);
+        setRecordedAudio(null);
+        setUploadSuccess(false);
+        audioBlobRef.current = null;
+        if (recordedAudio) {
+          URL.revokeObjectURL(recordedAudio);
+        }
+
+        // Reset batch state and load next level scripts
+        setScriptsBatch([]);
+        setCurrentBatchIndex(0);
+        setHasMoreRows(true);
+        setScriptsCompletedInLevel(0);
+        await fetchLevelScriptBatch(nextLevel, userId);
+        return;
       }
 
       // After successful upload, fetch next script in level
