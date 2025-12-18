@@ -1039,7 +1039,8 @@ export default function AudioCollector({}: AudioCollectorProps) {
                   <button
                     type="button"
                     onClick={handleOK}
-                    disabled={!isSessionValid || isUploading || uploadSuccess || !hasMoreRows}
+                    // Allow uploading even if this is the last script (hasMoreRows can be false on the final script).
+                    disabled={!isSessionValid || isUploading || uploadSuccess || !currentText}
                     className="flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-green-500 to-green-600 hover:from-green-600 hover:to-green-700 text-white rounded-lg shadow-md hover:shadow-lg transition-all duration-300 transform hover:scale-105 active:scale-95 font-medium disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none"
                   >
                     {isUploading ? (

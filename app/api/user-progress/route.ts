@@ -161,7 +161,13 @@ export async function POST(request: NextRequest) {
     const currentLevel = currentUser.current_level || 1;
     const scriptsCompletedInLevel = currentUser.scripts_completed_in_level || 0;
     const newScriptsCompleted = scriptsCompletedInLevel + 1;
-    const scriptsPerLevel = 50;
+    // Prefer the actual number of scripts in this level (based on the stored shuffled order),
+    // so empty rows in Google Sheets don't trap the user forever.
+    // Fallback to 50 for safety/legacy users.
+    const scriptsPerLevel =
+      Array.isArray(currentUser.level_script_order) && currentUser.level_script_order.length > 0
+        ? currentUser.level_script_order.length
+        : 50;
 
     // Check if level is complete (completed all 50 scripts)
     const levelComplete = newScriptsCompleted >= scriptsPerLevel;
@@ -171,6 +177,7 @@ export async function POST(request: NextRequest) {
     console.log(`📊 Level progress update:`);
     console.log(`  - Current level: ${currentLevel}`);
     console.log(`  - Scripts completed in level: ${scriptsCompletedInLevel} → ${newScriptsCompleted}`);
+    console.log(`  - Scripts required for this level: ${scriptsPerLevel}`);
     console.log(`  - Level complete: ${levelComplete}`);
     if (levelComplete) {
       console.log(`  - Moving to level ${nextLevel}`);

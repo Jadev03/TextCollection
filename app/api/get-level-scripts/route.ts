@@ -171,7 +171,7 @@ export async function GET(request: NextRequest) {
           level_script_order: scriptOrder,
           current_level: level,
         })
-        .eq('id', userId);
+        .eq('id', userIdNumber);
 
       console.log(`✅ Created and stored shuffled order for level ${level}`);
       console.log(`  - Original order: ${originalIndices.slice(0, 5).join(', ')}...`);
@@ -261,7 +261,12 @@ export async function GET(request: NextRequest) {
       totalScriptsInLevel: totalScriptsInLevel,
       scriptsRemainingInLevel: scriptsRemainingInLevel,
       hasMoreInLevel: hasMoreInLevel,
-      levelComplete: !hasMoreInLevel,
+      // IMPORTANT:
+      // `levelComplete` should mean "the level is already finished (no scripts left to do)".
+      // That condition is handled earlier (when `currentScriptIndex >= scriptOrder.length`).
+      // Do NOT mark the level complete just because this is the last batch, otherwise the UI
+      // will stop advancing through the remaining scripts in this batch.
+      levelComplete: false,
     });
   } catch (error: any) {
     console.error('❌ Error getting level scripts:', error);
